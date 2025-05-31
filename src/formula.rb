@@ -34,7 +34,7 @@ class {{package}} < Formula
 
     def install
 {%- for asset in assets %}
-        bin.install "{{ asset.executable }}" if OS.{{ asset.os }}? && Hardware::CPU.{{ asset.cpu }}?
+        bin.install "{{ executable }}" if OS.{{ asset.os }}? && Hardware::CPU.{{ asset.cpu }}?
 {%- endfor %}
 
         install_binary_aliases!

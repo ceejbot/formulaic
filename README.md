@@ -4,31 +4,37 @@
 
 ## Usage
 
-
-Here's an example of local use as part of a hand-run release workflow. This script would be run in your Rust tool repo clone.
+Here's an example of local use as part of a hand-run release workflow. This script would be run in your Rust tool repo.
 
 ```bash
 #!/usr/bin/env bash
 set -e
 
+TAPDIR="/path/to/taprepo"
+TOOLNAME=$(basename $(pwd))
+
+mkdir -p dist
+cd dist
+
 tag=$(git describe --tags --abbrev=0)
 release_url=$(gh release create "$tag" --generate-notes)
 
 for target in "aarch64-apple-darwin" "x86_64-apple-darwin"; do
-		cargo +stable build --release --target $target
-		tar czf {{ BINNAME }}-$target.tar.gz --strip-components=2  target/$target/release/{{ BINNAME }}
-		gh release upload "$tag" "{{ BINNAME }}-$target.tar.gz"
-		sha256sum {{ BINNAME }}-$target.tar.gz > {{ BINNAME }}-"$target".tar.gz.sha256
-		gh release upload "$tag" "{{ BINNAME }}-$target.tar.gz.sha256"
+	cargo +stable build --release --target $target
+	tar czf "$TOOLNAME-$target.tar.gz" --strip-components=2  "target/$target/release/$TOOLNAME"
+	gh release upload "$tag" "$TOOLNAME-$target.tar.gz"
+	sha256sum "$TOOLNAME-$target.tar.gz" > "$TOOLNAME-$target.tar.gz.sha256"
+	gh release upload "$tag" "$TOOLNAME-$target.tar.gz.sha256"
 done
 
-formula_file=$(formulaic ./Cargo.toml)
-mv $formula_file /path/to/tap/repo/Formula/
-cd /path/to/tap/repo/ || exit
-git commit Formula/$(basename $formula_file) -m "$(basename -s .rb $formula_file) release $tag"
+formula_file=$(formulaic ../Cargo.toml)
+mv $formula_file "$TAPDIR/Formula/"
+cd "$TAPDIR" || exit
+git add Formula/$(basename $formula_file)
+git commit -m "$(basename -s .rb $formula_file) $tag"
 ```
 
-The Cargo manifest in the target directory must include a repo url _or_ the tool must be running in a GitHub action so it can determine which repo it's acting on.
+The Cargo manifest in the target directory must include a repo url at the moment.
 
 ## LICENSE
 

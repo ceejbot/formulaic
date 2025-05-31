@@ -66,6 +66,7 @@ jobs:
             - name: upload release assets
               env:
                   GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+                  GITHUB_ACCESS_TOKEN: ${{ secrets.GITHUB_TOKEN }}
               run: |
                   mkdir -p dist
                   cd dist
@@ -78,7 +79,8 @@ jobs:
                       echo $shasum > formulaic-"$target".tar.gz.sha256
                       gh release upload "${{ github.ref_name }}" "formulaic-$target.tar.gz.sha256"
                   done
-                  formula_file=$(formulaic ../Cargo.toml)
+                  cp ../target/aarch64-apple-darwin/release/formulaic .
+                  formula_file=$(./formulaic ../Cargo.toml)
                   mv $formula_file formulaic.rb
 
             - name: update the homebrew tap
@@ -88,7 +90,9 @@ jobs:
               run: |
                   gh repo clone ceejbot/homebrew-tap
                   cd homebrew-tap || exit 1
-                  cp ../formulaic.rb Formula/
+                  cp ../dist/formulaic.rb Formula/
                   git add Formula/formulaic.rb
+                  git config user.name "formula robot"
+                  git config user.email "ceejceej@gmail.com"
                   git commit -m "formulaic ${{ github.ref_name }}"
-                  git push
+                  git push https://x-access-token:${{ secrets.HOMEBREW_TAP_TOKEN }}@github.com/ceejbot/homebrew-tap.git

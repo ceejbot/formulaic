@@ -67,19 +67,18 @@ jobs:
             - name: upload release assets
               env:
                   GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-              shell: bash
               run: |
-                  	mkdir -p dist
-                  	cd dist
-                  	for target in "aarch64-apple-darwin" "x86_64-apple-darwin"; do
-                       tar czf formulaic-$target.tar.gz --strip-components=2  target/$target/release/formulaic
-                       gh release upload ${{ github.ref_name }} "formulaic-$target.tar.gz"
+                  mkdir -p dist
+                  cd dist
+                  for target in "aarch64-apple-darwin" "x86_64-apple-darwin"; do
+                      tar czf formulaic-$target.tar.gz --strip-components=2  target/$target/release/formulaic
+                      gh release upload ${{ github.ref_name }} "formulaic-$target.tar.gz"
 
-                       sha256sum formulaic-$target.tar.gz > formulaic-"$target".tar.gz.sha256
-                       gh release upload "${{ github.ref_name }}" "formulaic-$target.tar.gz.sha256"
-                  	done
-                  	formula_file=$(formulaic ../Cargo.toml)
-                    mv $formula_file formulaic.rb
+                      sha256sum formulaic-$target.tar.gz > formulaic-"$target".tar.gz.sha256
+                      gh release upload "${{ github.ref_name }}" "formulaic-$target.tar.gz.sha256"
+                  done
+                  formula_file=$(formulaic ../Cargo.toml)
+                  mv $formula_file formulaic.rb
 
             - name: update the homebrew tap
               env:

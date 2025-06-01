@@ -1,7 +1,7 @@
 [package]
 name = "formulaic"
 description = "Update a Homebrew tap formula for a Rust project from its latest github release."
-version = "0.1.1"
+version = "0.2.0"
 edition = "2024"
 authors = ["C J Silverio <ceejceej@gmail.com>"]
 license = "Parity-7.0.0"

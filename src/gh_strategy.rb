@@ -1,51 +1,58 @@
 require "download_strategy"
+require "utils/formatter"
+require "utils/github"
+require "system_command"
 
-class GitHubCliDownloadStrategy < GitHubArtifactDownloadStrategy
+class GitHubCliDownloadStrategy < CurlDownloadStrategy
 	require "utils/formatter"
 	require "utils/github"
 	require "system_command"
 
-	sig { params(url: String, name: String, version: T.nilable(Version), meta: T.untyped).void }
 	def initialize(url, name, version, **meta)
 	    super
-	    match_data = %r{^https?://github\.com/(?<org>[^/]+)/(?<repo>[^/]+)\.git$}.match(@url)
+	    # Extract owner and repo from the URL
+	    # Example: https://github.com/ceejbot/formulaic/releases/download/main/formulaic-aarch64-apple-darwin.tar.gz
+	    match_data = %r{^https?://github\.com/(?<owner>[^/]+)/(?<repo>[^/]+)/releases/download}.match(@url)
 	    return unless match_data
 
-	    @org = T.let(match_data[:user], T.nilable(String))
-	    @repo = T.let(match_data[:repo], T.nilable(String))
+	    @owner = match_data[:owner]
+	    @repo = match_data[:repo]
+	    @filename = File.basename(@url)
 	end
 
-	def gh_command
-		"gh release download -R #{@org}/#{@repo} --pattern #{@filepath} -O #{temporary_path}"
-	end
-
-	sig { override.params(timeout: T.any(Float, Integer, NilClass)).void }
 	def fetch(timeout: nil)
-		ohai "Downloading #{url}"
+		ohai "Downloading #{url} using GitHub CLI"
 		if cached_location.exist?
 		    puts "Already downloaded: #{cached_location}"
 		else
 			begin
-			  	stdout, _, status = system_command("gh", args: [
+			  	# Create the temporary directory
+			  	temporary_path.dirname.mkpath
+
+			  	# Use gh CLI to download the release asset
+			  	system_command("gh", args: [
 				   		"release", "download",
-						 "-R", "#{@org}/#{@repo}",
-				   		"--pattern", "#{@filepath}",
-						"-O", "#{temporary_path}/#{resolved_basename}"
-				     ], print_stderr: false)
+						"-R", "#{@owner}/#{@repo}",
+				   		"--pattern", "#{@filename}",
+						"-D", "#{temporary_path}"
+				     ], print_stderr: true)
 			rescue ErrorDuringExecution
-        		raise GitHubCliDownloadStrategy, url
+        		raise GitHubCliDownloadStrategyError, "GitHub CLI download failed for: #{url}"
       		end
 			cached_location.dirname.mkpath
-		   	temporary_path.rename(cached_location.to_s)
+
+			# Find the downloaded file in the temporary path
+			downloaded_file = Dir["#{temporary_path}/*"].first
+
+			if downloaded_file
+				FileUtils.mv(downloaded_file, cached_location)
+			else
+				raise GitHubCliDownloadStrategyError, "Downloaded file not found in #{temporary_path}"
+			end
 		end
 
 		symlink_location.dirname.mkpath
     	FileUtils.ln_s cached_location.relative_path_from(symlink_location.dirname), symlink_location, force: true
-	end
-
-	sig { returns(String) }
-	def resolved_basename
-		"artifact.tgz"
 	end
 end
 
@@ -57,7 +64,7 @@ class {{package}}Test < Formula
 
 {%- for asset in assets %}
     if OS.{{asset.os}}? && Hardware::CPU.{{asset.cpu}}?
-        url    "{{asset.url}}", :using => GitHubCliDownloadStrategy
+        url    "{{asset.url}}", using: GitHubCliDownloadStrategy
         sha256 "{{asset.sha256}}"
     end
 {%- endfor %}

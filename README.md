@@ -1,12 +1,14 @@
 # formulaic
 
-`formulaic` is a cli that reads a manifest for a Rust program plus GitHub release information, and generates a homebrew formula for downloading assets for it. It is intended to be run in a GitHub action that's generating the release, though it can also be run locally after a release has been created. Yet another tool in a long series of tools that solve extremely specific problems that nobody else has.
+`formulaic` is a cli that reads a manifest for a Rust program plus GitHub release information, and generates a homebrew formula for downloading assets for it. It is intended to be run in a GitHub action that's generating the release, though it can also be run locally after a release has been created. It is yet another tool in a long series of tools that solve extremely specific problems that nobody else has.
 
 ## Usage
 
 Create a GitHub personal access token with _read_ access to the repository you're creating formulas for. Give it _write_ access to your Homebrew tap repo if you're also using this token in a workflow that updates the tap. Export that token in the env var `GITHUB_ACCESS_TOKEN`. Then invoke the tool with the location of the `Cargo.toml` manifest for the thing whose tap you want to update.
 
 `formulaic` writes a single file to the working directory in which it is invoked, then outputs the name of that file to `stdout`. The file is named `{executable}.rb`, for the first bin target it finds in the cargo manifest.
+
+If you set the `--gh-cli-strategy`, the tool will generate a formula file with an embedded custom download strategy that uses the `gh` [github command-line tool](https://cli.github.com). You can use an authenticated `gh` to download release artifacts from private repos, assuming you can tap the private repo to begin with.
 
 ```text
 Usage: formulaic [OPTIONS] [MANIFEST]
@@ -29,38 +31,6 @@ Options:
 ## Examples
 
 `formulaic` self-publishes to brew in [its release workflow](./.github/workflows/release.yml). Another working example is in the [justfile](./.justfile).
-
-Here's an example of local use as part of a hand-run release workflow. This script would be run in your Rust tool repo.
-
-```bash
-#!/usr/bin/env bash
-set -e
-
-TAPDIR="/path/to/taprepo"
-TOOLNAME=$(basename $(pwd))
-
-mkdir -p dist
-cd dist
-
-tag=$(git describe --tags --abbrev=0)
-release_url=$(gh release create "$tag" --generate-notes)
-
-for target in "aarch64-apple-darwin" "x86_64-apple-darwin"; do
-	cargo +stable build --release --target $target
-	tar czf "$TOOLNAME-$target.tar.gz" --strip-components=2  "target/$target/release/$TOOLNAME"
-	gh release upload "$tag" "$TOOLNAME-$target.tar.gz"
-	sha256sum "$TOOLNAME-$target.tar.gz" > "$TOOLNAME-$target.tar.gz.sha256"
-	gh release upload "$tag" "$TOOLNAME-$target.tar.gz.sha256"
-done
-
-formula_file=$(formulaic ../Cargo.toml)
-mv $formula_file "$TAPDIR/Formula/"
-cd "$TAPDIR" || exit
-git add Formula/$(basename $formula_file)
-git commit -m "$(basename -s .rb $formula_file) $tag"
-```
-
-The Cargo manifest in the target directory must include a repo url at the moment.
 
 ## Limitations
 

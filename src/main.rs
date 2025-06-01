@@ -5,6 +5,7 @@ use std::io::{Read, Write};
 
 use cargo_toml::Inheritable::Set;
 use cargo_toml::Manifest;
+use clap::Parser;
 use heck::ToTitleCase;
 use roctogen::endpoints::repos;
 use roctogen::models::ReleaseAsset;
@@ -12,13 +13,25 @@ use roctokit::adapters::client;
 use roctokit::auth::Auth;
 use sha2::{Digest, Sha256};
 
-static FORMULA_TMPL: &str = include_str!("formula.rb");
-
-fn render_to_string(values: &upon::Value) -> anyhow::Result<String> {
-    let mut engine = upon::Engine::new();
-    engine.add_template("formula", FORMULA_TMPL)?;
-    Ok(engine.template("formula").render(values).to_string()?)
+#[derive(Debug, Clone, Parser)]
+#[clap(author, version)]
+/// Generates a homebrew formula file for first bin mentioned in the given crate manifest.
+///
+/// Requires a valid github token in GITHUB_ACCESS_TOKEN.
+///
+/// Example: formulaic path/to/Cargo.toml
+/// Example: formulaic --gh-cli-strategy path/to/Cargo.toml
+struct Args {
+    /// path to the Cargo.toml file for the installable binary
+    #[arg(default_value = "./Cargo.toml")]
+    manifest: String,
+    /// Use the `gh` cli download strategy; useful for private tap repos.
+    #[arg(long = "gh-cli-strategy", short = 'g', default_value = "false")]
+    use_gh_strategy: bool,
 }
+
+static FORMULA_TMPL: &str = include_str!("formula.rb");
+static GH_FORMULA_TMPL: &str = include_str!("gh_strategy.rb");
 
 #[derive(Debug, Clone)]
 struct Asset {
@@ -93,91 +106,6 @@ impl From<Asset> for upon::Value {
     }
 }
 
-fn render_formula(manifest: &Manifest, github: &roctokit::adapters::ureq::Client) -> anyhow::Result<String> {
-    // get a package to use as info source
-    let Some(ref package) = manifest.package else {
-        return Err(anyhow::anyhow!(
-            "The Rust project must have at least one package in it."
-        ));
-    };
-
-    // We are going to take as our executable target the first bin in the bins list.
-    let Some(bin_product) = manifest.bin.first() else {
-        return Err(anyhow::anyhow!(
-            "No support for making formulas for Rust libraries, only for Rust binaries."
-        ));
-    };
-    let Some(ref executable) = bin_product.name else {
-        return Err(anyhow::anyhow!("The binary executable needs a name."));
-    };
-
-    // TODO look for repo info in environment if in CI
-    let Some(Set(ref repository)) = package.repository else {
-        return Err(anyhow::anyhow!(
-            "Can't guess the repository if neither running in an action nor given the info from Cargo.toml."
-        ));
-    };
-
-    let mut chunks: Vec<&str> = repository.split('/').collect();
-    // yeah, these are unwraps of options
-    let repo = chunks.pop().unwrap_or_default().trim_end_matches(".git").to_string();
-    let owner = chunks.pop().unwrap_or_default().to_string();
-
-    // gather release information
-    let repo_api = repos::new(github);
-    let repo_info = repo_api
-        .get(owner.as_str(), repo.as_str())
-        .expect("unable to fetch repo info");
-    let latest_release = repo_api
-        .get_latest_release(owner.as_str(), repo.as_str())
-        .expect("unable to get latest release");
-
-    let mut map: BTreeMap<&str, upon::Value> = BTreeMap::new();
-    map.insert("package", package.name().to_title_case().into());
-    map.insert("description", repo_info.description.unwrap_or_default().clone().into());
-    map.insert("homepage", repo_info.url.unwrap_or_default().clone().into());
-    map.insert("executable", executable.to_string().into());
-
-    let license = if let Some(license) = package.license() {
-        Some(license.to_string())
-    } else if let Some(v) = repo_info.license {
-        v.name.clone()
-    } else {
-        None
-    };
-    if let Some(ref lic) = license {
-        map.insert("license", lic.to_owned().into());
-    } else {
-        map.insert("license", "unlicensed".into());
-    }
-
-    let version = package.version();
-    map.insert("version", version.into());
-
-    let mut asset_list: Vec<_> = Vec::new();
-    if let Some(ref assets) = latest_release.assets {
-        for asset in assets {
-            let Ok(mapped) = Asset::try_from(asset) else {
-                continue;
-            };
-            asset_list.push(mapped);
-        }
-    }
-    map.insert("assets", asset_list.into());
-
-    let values = upon::to_value(map)?;
-    let rendered = render_to_string(&values)?;
-    // This rendered file needs to be commited to the homebrew tap repo
-    // as `Formula/executable.rb`
-    let formula_path = format!("{executable}.rb");
-    let mut fp = std::fs::File::create(&formula_path)?;
-    let count = fp.write(rendered.as_bytes())?;
-    if count == 0 {
-        eprintln!("zero-length formula file indicates trouble in River City.")
-    }
-    Ok(formula_path)
-}
-
 fn find_digest(filename: &str, url: &str) -> anyhow::Result<String> {
     // look for a local shasum file
     let digestpath = format!("{filename}.sha256");
@@ -209,22 +137,121 @@ fn find_digest(filename: &str, url: &str) -> anyhow::Result<String> {
     Ok(hex::encode(digest))
 }
 
+fn make_context(
+    manifest: &Manifest,
+    github: &roctokit::adapters::ureq::Client,
+) -> anyhow::Result<(upon::Value, String)> {
+    // get a package to use as info source
+    let Some(ref package) = manifest.package else {
+        return Err(anyhow::anyhow!(
+            "The Rust project must have at least one package in it."
+        ));
+    };
+
+    // We are going to take as our executable target the first bin in the bins list.
+    let Some(bin_product) = manifest.bin.first() else {
+        return Err(anyhow::anyhow!(
+            "No support for making formulas for Rust libraries, only for Rust binaries."
+        ));
+    };
+    let Some(ref executable) = bin_product.name else {
+        return Err(anyhow::anyhow!("The binary executable needs a name."));
+    };
+
+    // TODO look for repo info in environment if in CI
+    let Some(Set(ref repository)) = package.repository else {
+        return Err(anyhow::anyhow!(
+            "Can't guess the repository if neither running in an action nor given the info from Cargo.toml."
+        ));
+    };
+
+    let mut chunks: Vec<&str> = repository.split('/').collect();
+    let repo = chunks.pop().unwrap_or_default().trim_end_matches(".git").to_string();
+    let owner = chunks.pop().unwrap_or_default().to_string();
+
+    // gather release information
+    let repo_api = repos::new(github);
+    let repo_info = repo_api
+        .get(owner.as_str(), repo.as_str())
+        .expect("unable to fetch repo info");
+    let latest_release = repo_api
+        .get_latest_release(owner.as_str(), repo.as_str())
+        .expect("unable to get latest release");
+    let description = if let Some(Set(ref d)) = package.description {
+        d.to_owned()
+    } else {
+        repo_info.description.unwrap_or_default()
+    };
+
+    let mut map: BTreeMap<&str, upon::Value> = BTreeMap::new();
+    map.insert("package", package.name().to_title_case().into());
+    map.insert("description", description.into());
+    map.insert("homepage", repo_info.url.unwrap_or_default().clone().into());
+    map.insert("executable", executable.to_string().into());
+
+    let license = if let Some(license) = package.license() {
+        Some(license.to_string())
+    } else if let Some(v) = repo_info.license {
+        v.name.clone()
+    } else {
+        None
+    };
+    if let Some(ref lic) = license {
+        map.insert("license", lic.to_owned().into());
+    } else {
+        map.insert("license", "unlicensed".into());
+    }
+
+    let version = package.version();
+    map.insert("version", version.into());
+
+    let mut asset_list: Vec<_> = Vec::new();
+    if let Some(ref assets) = latest_release.assets {
+        for asset in assets {
+            let Ok(mapped) = Asset::try_from(asset) else {
+                continue;
+            };
+            asset_list.push(mapped);
+        }
+    }
+    map.insert("assets", asset_list.into());
+
+    let values = upon::to_value(map)?;
+    Ok((values, executable.to_string()))
+}
+
+fn render_to_string(use_gh: bool, values: &upon::Value) -> anyhow::Result<String> {
+    let mut engine = upon::Engine::new();
+    if use_gh {
+        engine.add_template("formula", GH_FORMULA_TMPL)?;
+    } else {
+        engine.add_template("formula", FORMULA_TMPL)?;
+    }
+    Ok(engine.template("formula").render(values).to_string()?)
+}
+
+fn render_formula(use_gh: bool, executable: String, context: &upon::Value) -> anyhow::Result<String> {
+    let rendered = render_to_string(use_gh, context)?;
+    let formula_path = format!("{executable}.rb");
+    let mut fp = std::fs::File::create(&formula_path)?;
+    let count = fp.write(rendered.as_bytes())?;
+    if count == 0 {
+        eprintln!("zero-length formula file indicates trouble in River City.")
+    }
+    Ok(formula_path)
+}
+
 fn main() -> anyhow::Result<()> {
     let token = std::env::var("GITHUB_ACCESS_TOKEN").expect("unable to find GITHUB_ACCESS_TOKEN");
 
-    // Read the desired manifest or fail fast.
-    let args: Vec<String> = std::env::args().rev().collect();
-    let manifest_path = if let Some(argument) = args.first() {
-        argument.to_owned()
-    } else {
-        "./Cargo.toml".to_string()
-    };
-    let manifest = cargo_toml::Manifest::from_path(manifest_path)?;
+    let args = Args::parse();
+    let manifest = cargo_toml::Manifest::from_path(&args.manifest)?;
 
     let auth = Auth::Token(token);
     let github = client(&auth)?;
 
-    let formula_path = render_formula(&manifest, &github)?;
+    let (context, executable) = make_context(&manifest, &github)?;
+    let formula_path = render_formula(args.use_gh_strategy, executable, &context)?;
     println!("{formula_path}");
 
     Ok(())
@@ -250,7 +277,7 @@ mod test {
                 }
             ]
         };
-        let rendered = render_to_string(&manifest).expect("rendering the template failed");
+        let rendered = render_to_string(false, &manifest).expect("rendering the template failed");
         eprintln!("{rendered}");
         assert!(rendered.contains("sha256 \"cafed00d\""));
         assert!(rendered.contains("bin.install \"frobber\" if OS.mac?"));

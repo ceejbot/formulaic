@@ -38,7 +38,6 @@ class {{package}} < Formula
 {%- endfor %}
 
         install_binary_aliases!
-
         doc_files = Dir["README.*", "readme.*", "LICENSE", "LICENSE.*", "CHANGELOG.*"]
         leftover_contents = Dir["*"] - doc_files
         pkgshare.install(*leftover_contents) unless leftover_contents.empty?

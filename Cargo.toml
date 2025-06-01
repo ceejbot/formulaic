@@ -1,6 +1,6 @@
 [package]
 name = "formulaic"
-description = "update homebrew tap formulas for Rust projects from their github releases"
+description = "Update a Homebrew tap formula for a Rust project from its latest github release."
 version = "0.1.1"
 edition = "2024"
 authors = ["C J Silverio <ceejceej@gmail.com>"]
@@ -12,6 +12,7 @@ homepage = "https://github.com/ceejbot/formulaic"
 [dependencies]
 anyhow = "1.0.98"
 cargo_toml = "0.22.1"
+clap = { version = "4.5.39", features = ["derive", "wrap_help"] }
 heck = "0.5.0"
 hex = "0.4.3"
 roctogen = "0.34.0"

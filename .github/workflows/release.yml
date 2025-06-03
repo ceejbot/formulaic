@@ -16,45 +16,28 @@ env:
     CARGO_TERM_COLOR: always
 
 jobs:
-    release:
-        name: release
-        runs-on: macos-latest
-        steps:
+    release-linux:
+      name: release-linux
+      runs-on: ubuntu-latest
+      steps:
             - uses: actions/checkout@v4
 
             - name: get stable + nightly Rust
               uses: actions-rust-lang/setup-rust-toolchain@v1
               with:
                   toolchain: nightly, stable
-                  target: x86_64-apple-darwin
+                  target: x86_64-unknown-linux-gnu
                   components: clippy, rustfmt
                   cache-directories: |
                       ~/.cargo/registry
                       ~/.cargo/bin
                       target
 
-            # - name: get cargo-nextest on path
-            #   run: |
-            #       if [[ -z $(which cargo-nextest) ]]; then
-            #         curl -sL https://get.nexte.st/latest/linux -o nextest.tgz
-            #         tar xfz nextest.tgz
-            #         mv cargo-nextest ~/.cargo/bin
-            #         rm nextest.tgz
-            #       fi
-
-            # - name: run the tests
-            #   run: cargo +stable nextest run
-
             - name: consult Clippy
               run: cargo +stable clippy --all-targets
 
             - name: check formatting
               run: cargo +nightly fmt --check --all
-
-            - name: build for release
-              run: |
-                  cargo +stable build --release --target aarch64-apple-darwin
-                  cargo +stable build --release --target x86_64-apple-darwin
 
             - name: create github release
               continue-on-error: true # for testing
@@ -63,10 +46,53 @@ jobs:
               run: |
                   release_url=$(gh release create ${{ github.ref_name }} --generate-notes)
 
+            - name: build for release
+              run: |
+                  cargo +stable build --release --target x86_64-unknown-linux-gnu
+
             - name: upload release assets
               env:
                   GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
                   GITHUB_ACCESS_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+              run: |
+                  mkdir -p dist
+                  cd dist
+                  for target in "x86_64-unknown-linux-gnu"; do
+                      tar czf formulaic-$target.tar.gz --strip-components=4  ../target/$target/release/formulaic
+                      gh release upload ${{ github.ref_name }} "formulaic-$target.tar.gz"
+
+                      digest=$(shasum -a 256 formulaic-$target.tar.gz)
+                      shasum=$(echo $digest | { read first rest; echo $first; } )
+                      echo $shasum > formulaic-"$target".tar.gz.sha256
+                      gh release upload "${{ github.ref_name }}" "formulaic-$target.tar.gz.sha256"
+                  done
+
+    release-macos:
+        name: release-macos
+        runs-on: macos-latest
+        needs: release-linux
+        steps:
+            - uses: actions/checkout@v4
+
+            - name: get stable + nightly Rust
+              uses: actions-rust-lang/setup-rust-toolchain@v1
+              with:
+                  toolchain: nightly, stable
+                  target: aarch64-apple-darwin, x86_64-apple-darwin
+                  components: clippy, rustfmt
+                  cache-directories: |
+                      ~/.cargo/registry
+                      ~/.cargo/bin
+                      target
+
+            - name: build for release
+              run: |
+                  cargo +stable build --release --target aarch64-apple-darwin
+                  cargo +stable build --release --target x86_64-apple-darwin
+
+            - name: upload release assets
+              env:
+                  GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
               run: |
                   mkdir -p dist
                   cd dist
@@ -79,8 +105,12 @@ jobs:
                       echo $shasum > formulaic-"$target".tar.gz.sha256
                       gh release upload "${{ github.ref_name }}" "formulaic-$target.tar.gz.sha256"
                   done
-                  cp ../target/aarch64-apple-darwin/release/formulaic .
-                  formula_file=$(./formulaic ../Cargo.toml)
+
+            - name: generate a formula file for all assets
+              env:
+                  GITHUB_ACCESS_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+              run: |
+                  formula_file=$(./target/aarch64-apple-darwin/release/formulaic ../Cargo.toml)
                   mv $formula_file formulaic.rb
 
             - name: update the homebrew tap
@@ -90,7 +120,7 @@ jobs:
               run: |
                   gh repo clone ceejbot/homebrew-tap
                   cd homebrew-tap || exit 1
-                  cp ../dist/formulaic.rb Formula/
+                  cp ../formulaic.rb Formula/
                   git add Formula/formulaic.rb
                   git config user.name "formula robot"
                   git config user.email "ceejceej@gmail.com"

@@ -1,12 +1,17 @@
 name: release
 permissions:
-    "contents": "write"
+    contents: write
 
 on:
     push:
         tags:
             - "v**[0-9]+.[0-9]+.[0-9]+*"
     workflow_dispatch:
+        inputs:
+            refname:
+                type: string
+                description: the refname to build a release from
+                default: latest
 
 concurrency:
     group: ${{ github.workflow }}-${{ github.ref }}
@@ -16,10 +21,10 @@ env:
     CARGO_TERM_COLOR: always
 
 jobs:
-    release-linux:
-      name: release-linux
-      runs-on: ubuntu-latest
-      steps:
+    preflight:
+        name: preflight
+        runs-on: ubuntu-latest
+        steps:
             - uses: actions/checkout@v4
 
             - name: get stable + nightly Rust
@@ -46,6 +51,23 @@ jobs:
               run: |
                   release_url=$(gh release create ${{ github.ref_name }} --generate-notes)
 
+    release-linux:
+        name: release-linux
+        runs-on: ubuntu-latest
+        needs: preflight
+        steps:
+            - uses: actions/checkout@v4
+
+            - name: get stable Rust
+              uses: actions-rust-lang/setup-rust-toolchain@v1
+              with:
+                  toolchain: stable
+                  target: x86_64-unknown-linux-gnu, aarch64-unknown-linux-gnu
+                  cache-directories: |
+                      ~/.cargo/registry
+                      ~/.cargo/bin
+                      target
+
             - name: build for release and upload
               env:
                   GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -67,16 +89,15 @@ jobs:
     release-macos:
         name: release-macos
         runs-on: macos-latest
-        needs: release-linux
+        needs: preflight
         steps:
             - uses: actions/checkout@v4
 
-            - name: get stable + nightly Rust
+            - name: get stable Rust
               uses: actions-rust-lang/setup-rust-toolchain@v1
               with:
-                  toolchain: nightly, stable
+                  toolchain: stable
                   target: aarch64-apple-darwin, x86_64-apple-darwin
-                  components: clippy, rustfmt
                   cache-directories: |
                       ~/.cargo/registry
                       ~/.cargo/bin
@@ -107,7 +128,7 @@ jobs:
               env:
                   GITHUB_ACCESS_TOKEN: ${{ secrets.GITHUB_TOKEN }}
               run: |
-                  formula_file=$(./target/aarch64-apple-darwin/release/formulaic ../Cargo.toml)
+                  formula_file=$(./target/aarch64-apple-darwin/release/formulaic ./Cargo.toml)
                   mv $formula_file formulaic.rb
 
             - name: update the homebrew tap

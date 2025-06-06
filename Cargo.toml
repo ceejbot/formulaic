@@ -15,7 +15,7 @@ cargo_toml = "0.22.1"
 clap = { version = "4.5.39", features = ["derive", "wrap_help"] }
 heck = "0.5.0"
 hex = "0.4.3"
-roctogen = "0.34.0"
+roctogen = "0.36.0"
 roctokit = { version = "0.15.0", features = ["ureq"] }
 serde_json = "1.0.140"
 sha2 = "0.10.9"

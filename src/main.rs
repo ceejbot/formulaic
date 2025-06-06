@@ -1,4 +1,4 @@
-//! doc string
+//! This is a typical Rust clap derive-style cli app.
 
 use std::collections::BTreeMap;
 use std::io::{Read, Write};
@@ -6,6 +6,8 @@ use std::path::PathBuf;
 
 use cargo_toml::Manifest;
 use clap::Parser;
+use clap::builder::Styles;
+use clap::builder::styling::AnsiColor;
 use heck::ToTitleCase;
 use roctogen::endpoints::repos;
 use roctogen::models::ReleaseAsset;
@@ -14,13 +16,10 @@ use roctokit::auth::Auth;
 use sha2::{Digest, Sha256};
 
 #[derive(Debug, Clone, Parser)]
-#[clap(author, version)]
+#[clap(author, version, styles = v3_styles())]
 /// Generates a homebrew formula file for first bin mentioned in the given crate manifest.
 ///
 /// Requires a valid github token in GITHUB_ACCESS_TOKEN or GITHUB_TOKEN.
-///
-/// Example: formulaic path/to/Cargo.toml
-/// Example: formulaic --gh-cli-strategy path/to/Cargo.toml
 struct Args {
     /// path to the Cargo.toml file for the installable binary
     #[arg(default_value = "./Cargo.toml")]
@@ -31,6 +30,14 @@ struct Args {
     /// If you have no repo-reading API permissions, we'll use only local data.
     #[arg(long = "no-perms", short = 'n', default_value_t = false, global = true)]
     no_perms: bool,
+}
+
+fn v3_styles() -> Styles {
+    Styles::styled()
+        .header(AnsiColor::Yellow.on_default())
+        .usage(AnsiColor::Green.on_default())
+        .literal(AnsiColor::Green.on_default())
+        .placeholder(AnsiColor::Green.on_default())
 }
 
 static FORMULA_TMPL: &str = include_str!("formula.rb");

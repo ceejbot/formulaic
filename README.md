@@ -12,7 +12,6 @@ If you set the `--gh-cli-strategy`, the tool will generate a formula file with a
 
 ```text
 Usage: formulaic [OPTIONS] [MANIFEST]
-Requires a valid github token in GITHUB_ACCESS_TOKEN.
 
 Arguments:
   [MANIFEST]
@@ -22,6 +21,8 @@ Arguments:
 Options:
   -g, --gh-cli-strategy
           Use the `gh` cli download strategy; useful for private tap repos
+  -n, --no-perms
+          If you have no repo-reading API permissions, we'll use only local data
   -h, --help
           Print help (see a summary with '-h')
   -V, --version

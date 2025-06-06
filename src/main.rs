@@ -278,7 +278,7 @@ fn make_context_local(manifest: &Manifest, manifest_path: &str) -> anyhow::Resul
             if !fullpath.is_dir() && ext.to_ascii_lowercase().eq("gz") {
                 let path_str = format!("{}", fullpath.display());
                 // https://github.com/vlognow/codefact/releases/download/v1.0.4/codefact-aarch64-apple-darwin.tar.gz
-                let url = format!("https://github.com/{owner}/{repo}/releases/download/{version}/{}", basename.display());
+                let url = format!("https://github.com/{owner}/{repo}/releases/download/v{version}/{}", basename.display());
                 let Ok(digest) = find_digest(path_str.as_str(), &url) else {
                     continue;
                 };

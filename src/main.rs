@@ -30,7 +30,7 @@ struct Args {
     use_gh_strategy: bool,
     /// If you have no repo-reading API permissions, we'll use only local data.
     #[arg(long = "no-perms", short = 'n', default_value_t = false, global = true)]
-    no_perms: bool
+    no_perms: bool,
 }
 
 static FORMULA_TMPL: &str = include_str!("formula.rb");
@@ -135,12 +135,11 @@ fn find_digest(filename: &str, url: &str) -> anyhow::Result<String> {
                         }
                         let ending = format!("  {filename}");
                         if let Some(slice) = digest.strip_suffix(ending.as_str()) {
-                            return Ok(slice.to_string())
+                            return Ok(slice.to_string());
                         }
                         if let Some(loc) = digest.rfind(" = ") {
                             let (_first, digest) = digest.split_at(loc + 3);
                             return Ok(digest.trim().to_string());
-
                         }
                     }
                 }
@@ -164,7 +163,6 @@ fn find_digest(filename: &str, url: &str) -> anyhow::Result<String> {
     let digest = Sha256::digest(&payload);
     Ok(hex::encode(digest))
 }
-
 
 fn make_context_common(manifest: &Manifest) -> anyhow::Result<(BTreeMap<&str, upon::Value>, String)> {
     // get a package to use as info source
@@ -269,28 +267,26 @@ fn make_context_local(manifest: &Manifest, manifest_path: &str) -> anyhow::Resul
             };
             let fullpath = entry.path();
             let Some(basename) = fullpath.as_path().file_name() else {
-              continue;
+                continue;
             };
             let Some(ext) = fullpath.as_path().extension() else {
-                continue
+                continue;
             };
 
             if !fullpath.is_dir() && ext.to_ascii_lowercase().eq("gz") {
                 let path_str = format!("{}", fullpath.display());
                 // https://github.com/vlognow/codefact/releases/download/v1.0.4/codefact-aarch64-apple-darwin.tar.gz
-                let url = format!("https://github.com/{owner}/{repo}/releases/download/v{version}/{}", basename.display());
+                let url = format!(
+                    "https://github.com/{owner}/{repo}/releases/download/v{version}/{}",
+                    basename.display()
+                );
                 let Ok(digest) = find_digest(path_str.as_str(), &url) else {
                     continue;
                 };
                 let os = extract_os(url.as_str());
                 let cpu = extract_cpu(url.as_str());
 
-                let asset = Asset {
-                    cpu,
-                    os,
-                    digest,
-                    url,
-                };
+                let asset = Asset { cpu, os, digest, url };
                 asset_list.push(asset);
             }
         }
@@ -329,7 +325,9 @@ fn main() -> anyhow::Result<()> {
     } else if let Ok(t) = std::env::var("GITHUB_TOKEN") {
         t
     } else {
-        return Err(anyhow::anyhow!("unable to find a token in either GITHUB_ACCESS_TOKEN or GITHUB_TOKEN"));
+        return Err(anyhow::anyhow!(
+            "unable to find a token in either GITHUB_ACCESS_TOKEN or GITHUB_TOKEN"
+        ));
     };
 
     let args = Args::parse();

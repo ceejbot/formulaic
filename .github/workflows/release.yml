@@ -62,7 +62,6 @@ jobs:
               uses: actions-rust-lang/setup-rust-toolchain@v1
               with:
                   toolchain: stable
-                  target: x86_64-unknown-linux-gnu, aarch64-unknown-linux-gnu
                   cache-directories: |
                       ~/.cargo/registry
                       ~/.cargo/bin
@@ -73,18 +72,14 @@ jobs:
                   GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
                   GITHUB_ACCESS_TOKEN: ${{ secrets.GITHUB_TOKEN }}
               run: |
-                  mkdir -p dist
-                  cd dist
-                  for target in "x86_64-unknown-linux-gnu" "aarch64-unknown-linux-gnu"; do
-                      cargo +stable build --release --target "$target"
-                      tar czf formulaic-$target.tar.gz --strip-components=4  ../target/$target/release/formulaic
-                      gh release upload ${{ github.ref_name }} "formulaic-$target.tar.gz"
+                  cargo +stable build --release --target "$target"
+                  tar czf formulaic-x86_64-unknown-linux-gnu.tar.gz --strip-components=2  target/release/formulaic
+                  gh release upload ${{ github.ref_name }} "formulaic-x86_64-unknown-linux-gnu.tar.gz"
 
-                      digest=$(shasum -a 256 formulaic-$target.tar.gz)
-                      shasum=$(echo $digest | { read first rest; echo $first; } )
-                      echo $shasum > formulaic-"$target".tar.gz.sha256
-                      gh release upload "${{ github.ref_name }}" "formulaic-$target.tar.gz.sha256"
-                  done
+                  digest=$(shasum -a 256 formulaic-x86_64-unknown-linux-gnu.tar.gz)
+                  shasum=$(echo $digest | { read first rest; echo $first; } )
+                  echo $shasum > formulaic-"x86_64-unknown-linux-gnu".tar.gz.sha256
+                  gh release upload "${{ github.ref_name }}" "formulaic-x86_64-unknown-linux-gnu.tar.gz.sha256"
 
     release-macos:
         name: release-macos
@@ -123,6 +118,7 @@ jobs:
                       echo $shasum > formulaic-"$target".tar.gz.sha256
                       gh release upload "${{ github.ref_name }}" "formulaic-$target.tar.gz.sha256"
                   done
+                  gh release edit "${{ github.ref_name }}" --draft=false
 
             - name: generate a formula file for all assets
               env:

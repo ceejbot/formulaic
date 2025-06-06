@@ -2,8 +2,8 @@
 
 use std::collections::BTreeMap;
 use std::io::{Read, Write};
+use std::path::PathBuf;
 
-use cargo_toml::Inheritable::Set;
 use cargo_toml::Manifest;
 use clap::Parser;
 use heck::ToTitleCase;
@@ -17,7 +17,7 @@ use sha2::{Digest, Sha256};
 #[clap(author, version)]
 /// Generates a homebrew formula file for first bin mentioned in the given crate manifest.
 ///
-/// Requires a valid github token in GITHUB_ACCESS_TOKEN.
+/// Requires a valid github token in GITHUB_ACCESS_TOKEN or GITHUB_TOKEN.
 ///
 /// Example: formulaic path/to/Cargo.toml
 /// Example: formulaic --gh-cli-strategy path/to/Cargo.toml
@@ -26,8 +26,11 @@ struct Args {
     #[arg(default_value = "./Cargo.toml")]
     manifest: String,
     /// Use the `gh` cli download strategy; useful for private tap repos.
-    #[arg(long = "gh-cli-strategy", short = 'g', default_value = "false")]
+    #[arg(long = "gh-cli-strategy", short = 'g', default_value_t = false, global = true)]
     use_gh_strategy: bool,
+    /// If you have no repo-reading API permissions, we'll use only local data.
+    #[arg(long = "no-perms", short = 'n', default_value_t = false, global = true)]
+    no_perms: bool
 }
 
 static FORMULA_TMPL: &str = include_str!("formula.rb");
@@ -70,21 +73,8 @@ impl TryFrom<&ReleaseAsset> for Asset {
             ));
         };
 
-        let os = if url.contains("apple") || url.contains("mac") || url.contains("darwin") {
-            "mac".to_string()
-        } else if url.contains("linux") {
-            "linux".to_string()
-        } else {
-            "unknown".to_string()
-        };
-
-        let cpu = if url.contains("intel") || url.contains("x86_64") {
-            "intel".to_string()
-        } else if url.contains("aarch") || url.contains("arm") {
-            "arm".to_string()
-        } else {
-            "unknown".to_string()
-        };
+        let os = extract_os(url);
+        let cpu = extract_cpu(url);
 
         Ok(Self {
             cpu,
@@ -92,6 +82,26 @@ impl TryFrom<&ReleaseAsset> for Asset {
             digest,
             url: url.to_owned(),
         })
+    }
+}
+
+fn extract_os(input: &str) -> String {
+    if input.contains("apple") || input.contains("mac") || input.contains("darwin") {
+        "mac".to_string()
+    } else if input.contains("linux") {
+        "linux".to_string()
+    } else {
+        "unknown".to_string()
+    }
+}
+
+fn extract_cpu(input: &str) -> String {
+    if input.contains("intel") || input.contains("x86_64") {
+        "intel".to_string()
+    } else if input.contains("aarch") || input.contains("arm") {
+        "arm".to_string()
+    } else {
+        "unknown".to_string()
     }
 }
 
@@ -113,8 +123,26 @@ fn find_digest(filename: &str, url: &str) -> anyhow::Result<String> {
         if exists {
             if let Ok(mut fp) = std::fs::File::open(&digestpath) {
                 let mut digest = String::new();
-                if let Ok(_length) = fp.read_to_string(&mut digest) {
-                    return Ok(digest);
+                if let Ok(length) = fp.read_to_string(&mut digest) {
+                    // We need to split off any non-digest junk.
+                    // the digest itself is exactly 64 char long
+                    if length == 64 {
+                        return Ok(digest);
+                    }
+                    if length > 64 {
+                        if let Some(slice) = digest.strip_prefix("sha256:") {
+                            return Ok(slice.to_string());
+                        }
+                        let ending = format!("  {filename}");
+                        if let Some(slice) = digest.strip_suffix(ending.as_str()) {
+                            return Ok(slice.to_string())
+                        }
+                        if let Some(loc) = digest.rfind(" = ") {
+                            let (_first, digest) = digest.split_at(loc + 3);
+                            return Ok(digest.trim().to_string());
+
+                        }
+                    }
                 }
             }
         }
@@ -137,10 +165,8 @@ fn find_digest(filename: &str, url: &str) -> anyhow::Result<String> {
     Ok(hex::encode(digest))
 }
 
-fn make_context(
-    manifest: &Manifest,
-    github: &roctokit::adapters::ureq::Client,
-) -> anyhow::Result<(upon::Value, String)> {
+
+fn make_context_common(manifest: &Manifest) -> anyhow::Result<(BTreeMap<&str, upon::Value>, String)> {
     // get a package to use as info source
     let Some(ref package) = manifest.package else {
         return Err(anyhow::anyhow!(
@@ -158,53 +184,46 @@ fn make_context(
         return Err(anyhow::anyhow!("The binary executable needs a name."));
     };
 
-    // TODO look for repo info in environment if in CI
-    let Some(Set(ref repository)) = package.repository else {
+    let homepage = package.homepage().map_or(String::default(), |xs| xs.to_owned());
+    let description = package.description().map_or(String::default(), |xs| xs.to_owned());
+
+    let mut map: BTreeMap<&str, upon::Value> = BTreeMap::new();
+    map.insert("package", package.name().to_title_case().into());
+    map.insert("description", description.into());
+    map.insert("executable", executable.to_string().into());
+    map.insert("homepage", homepage.into());
+    map.insert("version", package.version().into());
+
+    if let Some(ref lic) = package.license() {
+        map.insert("license", lic.to_owned().into());
+    } else {
+        map.insert("license", "unlicensed".into());
+    }
+
+    Ok((map, executable.into()))
+}
+
+fn make_context(
+    manifest: &Manifest,
+    github: &roctokit::adapters::ureq::Client,
+) -> anyhow::Result<(upon::Value, String)> {
+    let (mut map, executable) = make_context_common(manifest)?;
+    let Some(ref package) = manifest.package else {
         return Err(anyhow::anyhow!(
-            "Can't guess the repository if neither running in an action nor given the info from Cargo.toml."
+            "The Rust project must have at least one package in it."
         ));
     };
 
+    let repository = package.repository().map_or(String::default(), |xs| xs.to_owned());
     let mut chunks: Vec<&str> = repository.split('/').collect();
     let repo = chunks.pop().unwrap_or_default().trim_end_matches(".git").to_string();
     let owner = chunks.pop().unwrap_or_default().to_string();
 
     // gather release information
     let repo_api = repos::new(github);
-    let repo_info = repo_api
-        .get(owner.as_str(), repo.as_str())
-        .expect("unable to fetch repo info");
     let latest_release = repo_api
         .get_latest_release(owner.as_str(), repo.as_str())
         .expect("unable to get latest release");
-    let description = if let Some(Set(ref d)) = package.description {
-        d.to_owned()
-    } else {
-        repo_info.description.unwrap_or_default()
-    };
-
-    let mut map: BTreeMap<&str, upon::Value> = BTreeMap::new();
-    map.insert("package", package.name().to_title_case().into());
-    map.insert("description", description.into());
-    map.insert("homepage", repo_info.url.unwrap_or_default().clone().into());
-    map.insert("executable", executable.to_string().into());
-
-    let license = if let Some(license) = package.license() {
-        Some(license.to_string())
-    } else if let Some(v) = repo_info.license {
-        v.name.clone()
-    } else {
-        None
-    };
-    if let Some(ref lic) = license {
-        map.insert("license", lic.to_owned().into());
-    } else {
-        map.insert("license", "unlicensed".into());
-    }
-
-    let version = package.version();
-    map.insert("version", version.into());
-
     let mut asset_list: Vec<_> = Vec::new();
     if let Some(ref assets) = latest_release.assets {
         for asset in assets {
@@ -214,8 +233,70 @@ fn make_context(
             asset_list.push(mapped);
         }
     }
-    map.insert("assets", asset_list.into());
 
+    map.insert("assets", asset_list.into());
+    let values = upon::to_value(map)?;
+    Ok((values, executable.to_string()))
+}
+
+fn make_context_local(manifest: &Manifest, manifest_path: &str) -> anyhow::Result<(upon::Value, String)> {
+    let (mut map, executable) = make_context_common(manifest)?;
+    let Some(ref package) = manifest.package else {
+        return Err(anyhow::anyhow!(
+            "The Rust project must have at least one package in it."
+        ));
+    };
+
+    let version = package.version().to_string();
+    let repository = package.repository().map_or(String::default(), |xs| xs.to_owned());
+    let mut chunks: Vec<&str> = repository.split('/').collect();
+    let repo = chunks.pop().unwrap_or_default().trim_end_matches(".git").to_string();
+    let owner = chunks.pop().unwrap_or_default().to_string();
+
+    // gh release view -R vlognow/codefact --json assets
+    // { "assets": Vec<ReleaseAsset> }
+
+    // Iterate on .tar.gz files in a a dist/ dir at the same level as Cargo.toml
+    let mut asset_list: Vec<_> = Vec::new();
+    let mut dir = PathBuf::new();
+    dir.push(manifest_path);
+    dir.pop();
+    dir.push("dist");
+    if dir.is_dir() {
+        for entry in std::fs::read_dir(dir)? {
+            let Ok(entry) = entry else {
+                continue;
+            };
+            let fullpath = entry.path();
+            let Some(basename) = fullpath.as_path().file_name() else {
+              continue;
+            };
+            let Some(ext) = fullpath.as_path().extension() else {
+                continue
+            };
+
+            if !fullpath.is_dir() && ext.to_ascii_lowercase().eq("gz") {
+                let path_str = format!("{}", fullpath.display());
+                // https://github.com/vlognow/codefact/releases/download/v1.0.4/codefact-aarch64-apple-darwin.tar.gz
+                let url = format!("https://github.com/{owner}/{repo}/releases/download/{version}/{}", basename.display());
+                let Ok(digest) = find_digest(path_str.as_str(), &url) else {
+                    continue;
+                };
+                let os = extract_os(url.as_str());
+                let cpu = extract_cpu(url.as_str());
+
+                let asset = Asset {
+                    cpu,
+                    os,
+                    digest,
+                    url,
+                };
+                asset_list.push(asset);
+            }
+        }
+    }
+
+    map.insert("assets", asset_list.into());
     let values = upon::to_value(map)?;
     Ok((values, executable.to_string()))
 }
@@ -241,8 +322,15 @@ fn render_formula(use_gh: bool, executable: String, context: &upon::Value) -> an
     Ok(formula_path)
 }
 
+/// Parse arguments and act.
 fn main() -> anyhow::Result<()> {
-    let token = std::env::var("GITHUB_ACCESS_TOKEN").expect("unable to find GITHUB_ACCESS_TOKEN");
+    let token = if let Ok(t) = std::env::var("GITHUB_ACCESS_TOKEN") {
+        t
+    } else if let Ok(t) = std::env::var("GITHUB_TOKEN") {
+        t
+    } else {
+        return Err(anyhow::anyhow!("unable to find a token in either GITHUB_ACCESS_TOKEN or GITHUB_TOKEN"));
+    };
 
     let args = Args::parse();
     let manifest = cargo_toml::Manifest::from_path(&args.manifest)?;
@@ -250,7 +338,11 @@ fn main() -> anyhow::Result<()> {
     let auth = Auth::Token(token);
     let github = client(&auth)?;
 
-    let (context, executable) = make_context(&manifest, &github)?;
+    let (context, executable) = if args.no_perms {
+        make_context_local(&manifest, args.manifest.as_str())?
+    } else {
+        make_context(&manifest, &github)?
+    };
     let formula_path = render_formula(args.use_gh_strategy, executable, &context)?;
     println!("{formula_path}");
 

@@ -30,7 +30,7 @@ class GitHubCliDownloadStrategy < CurlDownloadStrategy
 			  	temporary_path.dirname.mkpath
 
 			  	# Use gh CLI to download the release asset
-			  	system_command("gh", args: [
+			  	system_command("/opt/homebrew/bin/gh", args: [
 				   		"release", "download",
 						"-R", "#{@owner}/#{@repo}",
 				   		"--pattern", "#{@filename}",
@@ -56,7 +56,7 @@ class GitHubCliDownloadStrategy < CurlDownloadStrategy
 	end
 end
 
-class {{package}}Test < Formula
+class {{package}} < Formula
     desc "{{description}}"
     homepage "{{homepage}}"
     version "{{version}}"

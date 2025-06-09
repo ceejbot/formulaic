@@ -72,7 +72,7 @@ jobs:
                   GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
                   GITHUB_ACCESS_TOKEN: ${{ secrets.GITHUB_TOKEN }}
               run: |
-                  cargo +stable build --release --target "$target"
+                  cargo +stable build --release
                   tar czf formulaic-x86_64-unknown-linux-gnu.tar.gz --strip-components=2  target/release/formulaic
                   gh release upload ${{ github.ref_name }} "formulaic-x86_64-unknown-linux-gnu.tar.gz"
 

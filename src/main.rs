@@ -8,7 +8,7 @@ use cargo_toml::Manifest;
 use clap::Parser;
 use clap::builder::Styles;
 use clap::builder::styling::AnsiColor;
-use heck::ToTitleCase;
+use heck::ToUpperCamelCase;
 use roctogen::endpoints::repos;
 use roctogen::models::ReleaseAsset;
 use roctokit::adapters::client;
@@ -28,8 +28,8 @@ struct Args {
     #[arg(long = "gh-cli-strategy", short = 'g', default_value_t = false, global = true)]
     use_gh_strategy: bool,
     /// If you have no repo-reading API permissions, we'll use only local data.
-    #[arg(long = "no-perms", short = 'n', default_value_t = false, global = true)]
-    no_perms: bool,
+    #[arg(long = "local", short = 'l', default_value_t = false, global = true)]
+    local: bool,
 }
 
 fn v3_styles() -> Styles {
@@ -193,7 +193,7 @@ fn make_context_common(manifest: &Manifest) -> anyhow::Result<(BTreeMap<&str, up
     let description = package.description().map_or(String::default(), |xs| xs.to_owned());
 
     let mut map: BTreeMap<&str, upon::Value> = BTreeMap::new();
-    map.insert("package", package.name().to_title_case().into());
+    map.insert("package", package.name().to_upper_camel_case().into());
     map.insert("description", description.into());
     map.insert("executable", executable.to_string().into());
     map.insert("homepage", homepage.into());
@@ -343,7 +343,7 @@ fn main() -> anyhow::Result<()> {
     let auth = Auth::Token(token);
     let github = client(&auth)?;
 
-    let (context, executable) = if args.no_perms {
+    let (context, executable) = if args.local {
         make_context_local(&manifest, args.manifest.as_str())?
     } else {
         make_context(&manifest, &github)?

@@ -21,7 +21,7 @@ Arguments:
 Options:
   -g, --gh-cli-strategy
           Use the `gh` cli download strategy; useful for private tap repos
-  -n, --no-perms
+  -, --local
           If you have no repo-reading API permissions, we'll use only local data
   -h, --help
           Print help (see a summary with '-h')

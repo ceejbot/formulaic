@@ -94,10 +94,8 @@ fn make_context_from_github(
                         .keys()
                         .any(|target| after_prefix.starts_with(target));
 
-                    if is_direct_target {
-                        if let Ok(mapped) = Asset::from_release_asset(asset, &matcher) {
-                            context.assets.push(mapped);
-                        }
+                    if is_direct_target && let Ok(mapped) = Asset::from_release_asset(asset, &matcher) {
+                        context.assets.push(mapped);
                     }
                 }
             }
@@ -167,20 +165,17 @@ fn make_context_local_new(
                     .keys()
                     .any(|target| after_prefix.starts_with(target));
 
-                if is_direct_target {
-                    if let Some((os, cpu)) = matcher.extract_platform(&basename_str) {
-                        let url =
-                            format!("https://github.com/{owner}/{repo}/releases/download/v{version}/{basename_str}");
+                if is_direct_target && let Some((os, cpu)) = matcher.extract_platform(&basename_str) {
+                    let url = format!("https://github.com/{owner}/{repo}/releases/download/v{version}/{basename_str}");
 
-                        let path_str = fullpath.to_string_lossy();
-                        if let Ok(digest) = find_digest(&path_str, &url) {
-                            context.assets.push(Asset {
-                                cpu: cpu.to_string(),
-                                os: os.to_string(),
-                                digest,
-                                url,
-                            });
-                        }
+                    let path_str = fullpath.to_string_lossy();
+                    if let Ok(digest) = find_digest(&path_str, &url) {
+                        context.assets.push(Asset {
+                            cpu: cpu.to_string(),
+                            os: os.to_string(),
+                            digest,
+                            url,
+                        });
                     }
                 }
             }

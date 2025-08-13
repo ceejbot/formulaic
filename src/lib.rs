@@ -85,10 +85,10 @@ pub fn get_binaries_from_manifest(manifest: &Manifest, target_bin: Option<&str>)
         };
 
         // Filter by target binary if specified
-        if let Some(target) = target_bin {
-            if executable != target {
-                continue;
-            }
+        if let Some(target) = target_bin
+            && executable != target
+        {
+            continue;
         }
 
         binaries.push(BinaryInfo {
@@ -186,29 +186,28 @@ impl From<Asset> for upon::Value {
 pub fn find_digest(filename: &str, url: &str) -> anyhow::Result<String> {
     // look for a local shasum file
     let digestpath = format!("{filename}.sha256");
-    if let Ok(exists) = std::fs::exists(&digestpath) {
-        if exists {
-            if let Ok(mut fp) = std::fs::File::open(&digestpath) {
-                let mut digest = String::new();
-                if let Ok(length) = fp.read_to_string(&mut digest) {
-                    // We need to split off any non-digest junk.
-                    // the digest itself is exactly 64 char long
-                    if length == 64 {
-                        return Ok(digest);
-                    }
-                    if length > 64 {
-                        if let Some(slice) = digest.strip_prefix("sha256:") {
-                            return Ok(slice.to_string());
-                        }
-                        let ending = format!("  {filename}");
-                        if let Some(slice) = digest.strip_suffix(ending.as_str()) {
-                            return Ok(slice.to_string());
-                        }
-                        if let Some(loc) = digest.rfind(" = ") {
-                            let (_first, digest) = digest.split_at(loc + 3);
-                            return Ok(digest.trim().to_string());
-                        }
-                    }
+    if let Ok(exists) = std::fs::exists(&digestpath)
+        && exists
+        && let Ok(mut fp) = std::fs::File::open(&digestpath)
+    {
+        let mut digest = String::new();
+        if let Ok(length) = fp.read_to_string(&mut digest) {
+            // We need to split off any non-digest junk.
+            // the digest itself is exactly 64 char long
+            if length == 64 {
+                return Ok(digest);
+            }
+            if length > 64 {
+                if let Some(slice) = digest.strip_prefix("sha256:") {
+                    return Ok(slice.to_string());
+                }
+                let ending = format!("  {filename}");
+                if let Some(slice) = digest.strip_suffix(ending.as_str()) {
+                    return Ok(slice.to_string());
+                }
+                if let Some(loc) = digest.rfind(" = ") {
+                    let (_first, digest) = digest.split_at(loc + 3);
+                    return Ok(digest.trim().to_string());
                 }
             }
         }

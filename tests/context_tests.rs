@@ -45,7 +45,7 @@ fn can_render_template() {
 #[test]
 fn single_binary_detection() {
     let manifest = load_fixture("single-binary");
-    let binaries = get_binaries_from_manifest(&manifest, None).unwrap();
+    let binaries = get_binaries_from_manifest(&manifest, None).expect("text fixtures should behave");
 
     assert_eq!(binaries.len(), 1);
     assert_eq!(binaries[0].name, "example-tool");
@@ -55,7 +55,7 @@ fn single_binary_detection() {
 #[test]
 fn multi_binary_detection() {
     let manifest = load_fixture("multi-binary");
-    let binaries = get_binaries_from_manifest(&manifest, None).unwrap();
+    let binaries = get_binaries_from_manifest(&manifest, None).expect("text fixtures should behave");
 
     assert_eq!(binaries.len(), 3);
 
@@ -68,7 +68,7 @@ fn multi_binary_detection() {
 #[test]
 fn specific_binary_filtering() {
     let manifest = load_fixture("multi-binary");
-    let binaries = get_binaries_from_manifest(&manifest, Some("helper")).unwrap();
+    let binaries = get_binaries_from_manifest(&manifest, Some("helper")).expect("text fixtures should behave");
 
     assert_eq!(binaries.len(), 1);
     assert_eq!(binaries[0].name, "helper");
@@ -80,12 +80,8 @@ fn binary_not_found() {
     let result = get_binaries_from_manifest(&manifest, Some("nonexistent"));
 
     assert!(result.is_err());
-    assert!(
-        result
-            .unwrap_err()
-            .to_string()
-            .contains("Binary 'nonexistent' not found")
-    );
+    let the_error = result.expect_err("we expected this check to fail");
+    assert!(the_error.to_string().contains("Binary 'nonexistent' not found"));
 }
 
 #[test]
@@ -96,7 +92,7 @@ fn can_create_base_context() {
         package_name: "example-tool".to_string(),
     };
 
-    let context = create_base_context(&manifest, &binary).unwrap();
+    let context = create_base_context(&manifest, &binary).expect("text fixtures should behave");
 
     assert_eq!(context.package, "ExampleTool"); // UpperCamelCase
     assert_eq!(context.description, "A simple example tool");
@@ -159,7 +155,7 @@ fn context_with_minimal_package_info() {
         package_name: "example-tool".to_string(),
     };
 
-    let context = create_base_context(&manifest, &binary).unwrap();
+    let context = create_base_context(&manifest, &binary).expect("text fixtures should behave");
 
     // Verify all required fields are populated
     assert!(!context.package.is_empty());

@@ -13,10 +13,12 @@ ci: test
 	cargo clippy
 	cargo +nightly fmt
 
-# Ask for clippy's opinion.
-lint:
-	cargo clippy --fix
+fmt:
 	cargo +nightly fmt
+
+# Ask for clippy's opinion.
+lint: fmt
+	cargo clippy --fix
 
 # Install required tools
 setup:

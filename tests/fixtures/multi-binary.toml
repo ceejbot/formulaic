@@ -1,0 +1,22 @@
+[package]
+name = "multi-tool"
+description = "A tool with multiple binaries"
+version = "2.1.0"
+edition = "2021"
+authors = ["Test Author <test@example.com>"]
+license = "Apache-2.0"
+readme = "README.md"
+repository = "https://github.com/testowner/multi-tool"
+homepage = "https://multi-tool.dev"
+
+[[bin]]
+name = "multi-tool"
+path = "src/main.rs"
+
+[[bin]]
+name = "helper"
+path = "src/bin/helper.rs"
+
+[[bin]]
+name = "converter"
+path = "src/bin/converter.rs"

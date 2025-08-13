@@ -1,0 +1,17 @@
+[package]
+name = "cli"
+description = "CLI component of workspace project"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage = "https://cli.example.com"
+
+[[bin]]
+name = "cli"
+path = "src/main.rs"
+
+[[bin]]
+name = "cli-admin"
+path = "src/bin/admin.rs"

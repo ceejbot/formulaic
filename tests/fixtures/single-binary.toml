@@ -1,0 +1,14 @@
+[package]
+name = "example-tool"
+description = "A simple example tool"
+version = "1.2.3"
+edition = "2021"
+authors = ["Test Author <test@example.com>"]
+license = "MIT"
+readme = "README.md"
+repository = "https://github.com/testowner/example-tool"
+homepage = "https://example.com"
+
+[[bin]]
+name = "example-tool"
+path = "src/main.rs"

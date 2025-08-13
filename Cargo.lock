@@ -386,7 +386,6 @@ dependencies = [
  "hex",
  "roctogen",
  "roctokit",
- "serde_json",
  "sha2",
  "upon",
  "ureq",

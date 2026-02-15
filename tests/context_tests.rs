@@ -329,6 +329,38 @@ fn parse_owner_repo_git_suffix() {
 }
 
 #[test]
+fn generic_manifest_with_gh_strategy() {
+    let toml = r#"
+        name = "test-tool"
+        version = "1.0.0"
+        gh-cli-strategy = true
+    "#;
+    let manifest: GenericManifest = toml::from_str(toml).expect("should parse");
+    assert_eq!(manifest.use_gh_strategy, Some(true));
+}
+
+#[test]
+fn generic_manifest_without_gh_strategy() {
+    let toml = r#"
+        name = "test-tool"
+        version = "1.0.0"
+    "#;
+    let manifest: GenericManifest = toml::from_str(toml).expect("should parse");
+    assert_eq!(manifest.use_gh_strategy, None);
+}
+
+#[test]
+fn generic_manifest_gh_strategy_false() {
+    let toml = r#"
+        name = "test-tool"
+        version = "1.0.0"
+        gh-cli-strategy = false
+    "#;
+    let manifest: GenericManifest = toml::from_str(toml).expect("should parse");
+    assert_eq!(manifest.use_gh_strategy, Some(false));
+}
+
+#[test]
 #[ignore] // Workspace members need to be tested differently
 fn workspace_member_context() {
     // This test is disabled because cargo_toml requires workspace members

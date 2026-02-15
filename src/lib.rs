@@ -23,14 +23,14 @@ pub struct GenericManifest {
     pub license: Option<String>,
     #[serde(default)]
     pub repository: Option<String>,
+    #[serde(default, rename = "gh-cli-strategy")]
+    pub use_gh_strategy: Option<bool>,
 }
 
 impl GenericManifest {
     pub fn from_path(path: &Path) -> anyhow::Result<Self> {
-        let content =
-            std::fs::read_to_string(path).with_context(|| format!("Failed to read {}", path.display()))?;
-        let manifest: Self =
-            toml::from_str(&content).with_context(|| format!("Failed to parse {}", path.display()))?;
+        let content = std::fs::read_to_string(path).with_context(|| format!("Failed to read {}", path.display()))?;
+        let manifest: Self = toml::from_str(&content).with_context(|| format!("Failed to parse {}", path.display()))?;
         Ok(manifest)
     }
 
@@ -210,10 +210,7 @@ pub fn create_base_context_from_generic(manifest: &GenericManifest) -> FormulaCo
         executable: manifest.name.clone(),
         homepage: manifest.homepage.clone().unwrap_or_default(),
         version: manifest.version.clone(),
-        license: manifest
-            .license
-            .clone()
-            .unwrap_or_else(|| "unlicensed".to_string()),
+        license: manifest.license.clone().unwrap_or_else(|| "unlicensed".to_string()),
         assets: Vec::new(),
     }
 }

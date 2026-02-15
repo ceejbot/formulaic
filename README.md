@@ -1,33 +1,57 @@
 # formulaic
 
-`formulaic` is a cli that reads a manifest for a Rust program plus GitHub release information, and generates a homebrew formula for downloading assets for it. It is intended to be run in a GitHub action that's generating the release, though it can also be run locally after a release has been created. It is yet another tool in a long series of tools that solve extremely specific problems that nobody else has.
+`formulaic` generates Homebrew formula files from GitHub release assets. It supports Rust projects via `Cargo.toml` and any project via a `formulaic.toml` manifest. It is intended to be run in a GitHub action that's generating a release, though it can also be run locally after a release has been created.
 
 ## Usage
 
-Create a GitHub personal access token with _read_ access to the repository you're creating formulas for. Give it _write_ access to your Homebrew tap repo if you're also using this token in a workflow that updates the tap. Export that token in the env var `GITHUB_ACCESS_TOKEN`. Then invoke the tool with the location of the `Cargo.toml` manifest for the thing whose tap you want to update.
+Create a GitHub personal access token with _read_ access to the repository you're creating formulas for. Give it _write_ access to your Homebrew tap repo if you're also using this token in a workflow that updates the tap. Export that token as `GITHUB_ACCESS_TOKEN` or `GITHUB_TOKEN`.
 
-`formulaic` writes a single file to the working directory in which it is invoked, then outputs the name of that file to `stdout`. The file is named `{executable}.rb`, for the first bin target it finds in the cargo manifest.
-
-If you set the `--gh-cli-strategy`, the tool will generate a formula file with an embedded custom download strategy that uses the `gh` [github command-line tool](https://cli.github.com). You can use an authenticated `gh` to download release artifacts from private repos, assuming you can tap the private repo to begin with.
-
-```text
-Usage: formulaic [OPTIONS] [MANIFEST]
-
-Arguments:
-  [MANIFEST]
-          path to the Cargo.toml file for the installable binary
-          [default: ./Cargo.toml]
-
-Options:
-  -g, --gh-cli-strategy
-          Use the `gh` cli download strategy; useful for private tap repos
-  -l, --local
-          If you have no repo-reading API permissions, we'll use only local data
-  -h, --help
-          Print help (see a summary with '-h')
-  -V, --version
-          Print version
 ```
+formulaic [OPTIONS] [MANIFEST]
+```
+
+If no manifest path is given, formulaic searches the current directory in this order:
+
+1. `.config/formulaic.toml`
+2. `.formulaic.toml`
+3. `formulaic.toml`
+4. `Cargo.toml`
+
+The tool writes `{executable}.rb` to the working directory (or `--output-dir`) and prints the path to stdout. Use `--dry-run` to preview without writing.
+
+### Options
+
+| Flag | Short | Description |
+|------|-------|-------------|
+| `--gh-cli-strategy` | `-g` | Use the `gh` CLI download strategy (useful for private repos) |
+| `--local` | `-l` | Use only local data from a `dist/` directory instead of the GitHub API |
+| `--bin <NAME>` | | Generate a formula for a specific binary only |
+| `--all` | | Generate formulas for all binaries (default when more than one exists) |
+| `--output-dir <DIR>` | `-o` | Write formula files to this directory |
+| `--dry-run` | | Preview formulas without writing files |
+| `--template <FILE>` | `-t` | Use a custom formula template (upon/Jinja2 syntax) |
+
+## `formulaic.toml`
+
+For non-Rust projects, create a `formulaic.toml` (or `.formulaic.toml`, or `.config/formulaic.toml`) with your project metadata:
+
+```toml
+name = "my-tool"
+version = "1.0.0"
+description = "What my tool does"
+homepage = "https://github.com/owner/my-tool"
+license = "MIT"
+repository = "https://github.com/owner/my-tool"
+gh-cli-strategy = true
+```
+
+Required fields: `name`, `version`. All others are optional.
+
+Setting `gh-cli-strategy = true` in the manifest is equivalent to passing `--gh-cli-strategy` on the command line. The CLI flag and the manifest field are OR'd together — either one enables the strategy.
+
+## The `gh` CLI download strategy
+
+The `--gh-cli-strategy` flag generates a formula with an embedded download strategy that uses the [`gh` CLI tool](https://cli.github.com). This lets an authenticated `gh` download release artifacts from private repos, assuming you can tap the repo to begin with. This is not an official Homebrew strategy, but a best-effort implementation.
 
 ## Examples
 
@@ -35,10 +59,8 @@ Options:
 
 ## Limitations
 
-The GitHub CLI download strategy is not an official homebrew strategy, but instead my best take on what one should be. It's undoubtedly less bomb-proof than one the official project would write.
+Multi-binary support (`--bin`, `--all`) works for Cargo projects but is stubbed for generic manifests — a `formulaic.toml` project always produces a single formula. Workspace support is untested.
 
-I should probably make this iterate through all discovered bins in a manifest. I only had examples with single bin targets. I also haven't tested this at all with workspaces. The manifest-reading crate, [cargo_toml](https://lib.rs/crates/cargo_toml), should be doing a good job handling them, however.
-
-## LICENSE
+## License
 
 This code is licensed via [the Parity Public License.](https://paritylicense.com) This license requires people who build on top of this source code to share their work with the community, too. See the license text for details.

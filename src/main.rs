@@ -9,9 +9,8 @@ use clap::Parser;
 use clap::builder::Styles;
 use clap::builder::styling::AnsiColor;
 use formulaic::{
-    Asset, AssetMatcher, FormulaContext, GenericManifest, create_base_context,
-    create_base_context_from_generic, find_digest, get_binaries_from_manifest, parse_owner_repo,
-    render_to_string,
+    Asset, AssetMatcher, FormulaContext, GenericManifest, create_base_context, create_base_context_from_generic,
+    find_digest, get_binaries_from_manifest, parse_owner_repo, render_to_string,
 };
 use roctogen::endpoints::repos;
 use roctokit::adapters::client;
@@ -25,7 +24,8 @@ use roctokit::auth::Auth;
 /// Requires a valid github token in GITHUB_ACCESS_TOKEN or GITHUB_TOKEN.
 struct Args {
     /// Path to the manifest file (Cargo.toml or formulaic.toml).
-    /// If omitted, looks for formulaic.toml then Cargo.toml in the current directory.
+    /// If omitted, looks for .config/formulaic.toml, .formulaic.toml,
+    /// formulaic.toml, then Cargo.toml in the current directory.
     manifest: Option<String>,
     /// Use the `gh` cli download strategy; useful for private tap repos
     #[arg(long = "gh-cli-strategy", short = 'g')]
@@ -67,31 +67,35 @@ enum ResolvedManifest {
 /// Resolve which manifest to use.
 ///
 /// 1. If a path is given explicitly, detect type by filename.
-/// 2. Otherwise try `formulaic.toml` then `Cargo.toml` in cwd.
+/// 2. Otherwise try `.config/formulaic.toml`, `.formulaic.toml`,
+///    `formulaic.toml`, then `Cargo.toml` in cwd.
 fn resolve_manifest(explicit: Option<&str>) -> anyhow::Result<ResolvedManifest> {
     if let Some(path) = explicit {
         if path.ends_with("formulaic.toml") {
             let manifest = GenericManifest::from_path(path.as_ref())?;
             return Ok(ResolvedManifest::Generic { manifest });
         }
-        let manifest = Manifest::from_path(path)
-            .with_context(|| format!("Failed to read manifest at {path}"))?;
+        let manifest = Manifest::from_path(path).with_context(|| format!("Failed to read manifest at {path}"))?;
         return Ok(ResolvedManifest::Cargo {
             path: path.to_string(),
             manifest: Box::new(manifest),
         });
     }
 
-    // Auto-detect: try formulaic.toml first, then Cargo.toml
-    let formulaic_path = PathBuf::from("./formulaic.toml");
-    if formulaic_path.exists() {
-        let manifest = GenericManifest::from_path(&formulaic_path)?;
-        return Ok(ResolvedManifest::Generic { manifest });
+    // Auto-detect: try formulaic.toml variants, then Cargo.toml
+    let candidates = [".config/formulaic.toml", ".formulaic.toml", "formulaic.toml"];
+    for candidate in &candidates {
+        let path = PathBuf::from(candidate);
+        if path.exists() {
+            let manifest = GenericManifest::from_path(&path)?;
+            return Ok(ResolvedManifest::Generic { manifest });
+        }
     }
 
     let cargo_path = "./Cargo.toml";
-    let manifest = Manifest::from_path(cargo_path)
-        .with_context(|| "No formulaic.toml or Cargo.toml found in current directory")?;
+    let manifest = Manifest::from_path(cargo_path).with_context(
+        || "No formulaic.toml (or .formulaic.toml, .config/formulaic.toml) or Cargo.toml found in current directory",
+    )?;
     Ok(ResolvedManifest::Cargo {
         path: cargo_path.to_string(),
         manifest: Box::new(manifest),
@@ -145,16 +149,13 @@ fn fetch_local_assets(
     let dist_dir = manifest_dir.join("dist");
 
     if !dist_dir.is_dir() {
-        anyhow::bail!(
-            "No dist/ directory found at {} for local mode",
-            dist_dir.display()
-        );
+        anyhow::bail!("No dist/ directory found at {} for local mode", dist_dir.display());
     }
 
     let matcher = AssetMatcher::new();
 
-    for entry in
-        std::fs::read_dir(&dist_dir).with_context(|| format!("Failed to read dist directory: {}", dist_dir.display()))?
+    for entry in std::fs::read_dir(&dist_dir)
+        .with_context(|| format!("Failed to read dist directory: {}", dist_dir.display()))?
     {
         let entry = entry?;
         let fullpath = entry.path();
@@ -173,9 +174,8 @@ fn fetch_local_assets(
                 if matcher.matches_target(after_prefix) {
                     let platforms = matcher.extract_platforms(&basename_str);
                     if !platforms.is_empty() {
-                        let url = format!(
-                            "https://github.com/{owner}/{repo}/releases/download/v{version}/{basename_str}"
-                        );
+                        let url =
+                            format!("https://github.com/{owner}/{repo}/releases/download/v{version}/{basename_str}");
                         let path_str = fullpath.to_string_lossy();
                         if let Ok(digest) = find_digest(&path_str, &url) {
                             for (os, cpu) in platforms {
@@ -275,7 +275,9 @@ fn main() -> anyhow::Result<()> {
                 // For generic manifests, use cwd as the manifest directory
                 let manifest_dir = if let Some(ref path) = args.manifest {
                     let p = PathBuf::from(path);
-                    p.parent().map(|d| d.to_path_buf()).unwrap_or_else(|| PathBuf::from("."))
+                    p.parent()
+                        .map(|d| d.to_path_buf())
+                        .unwrap_or_else(|| PathBuf::from("."))
                 } else {
                     PathBuf::from(".")
                 };
@@ -286,8 +288,9 @@ fn main() -> anyhow::Result<()> {
                 anyhow::bail!("GitHub client not available");
             }
 
+            let use_gh = args.use_gh_strategy || manifest.use_gh_strategy.unwrap_or(false);
             let formula_path = render_formula(
-                args.use_gh_strategy,
+                use_gh,
                 custom_template,
                 &context,
                 args.output_dir.as_ref(),
@@ -302,11 +305,7 @@ fn main() -> anyhow::Result<()> {
             let binaries = get_binaries_from_manifest(&manifest, args.bin.as_deref())?;
 
             let process_all = args.all || (binaries.len() > 1 && args.bin.is_none());
-            let binaries_to_process = if process_all {
-                &binaries[..]
-            } else {
-                &binaries[..1]
-            };
+            let binaries_to_process = if process_all { &binaries[..] } else { &binaries[..1] };
 
             let Some(ref package) = manifest.package else {
                 anyhow::bail!("The Rust project must have at least one package in it.");

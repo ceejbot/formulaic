@@ -1,0 +1,52 @@
+name: "Tests"
+on:
+    push:
+        branches: ["latest"]
+        paths:
+            - src/**
+            - fixtures/**
+            - Cargo.toml
+            - Cargo.lock
+            - .github/workflows/test.yaml
+    pull_request:
+        branches: ["latest"]
+    workflow_dispatch:
+
+env:
+    CARGO_TERM_COLOR: always
+
+jobs:
+    test:
+        name: test
+        runs-on: ubuntu-latest
+        steps:
+            - uses: actions/checkout@v5
+
+            - name: get stable + nightly Rust
+              uses: actions-rust-lang/setup-rust-toolchain@v1
+              with:
+                  toolchain: nightly, stable
+                  target: x86_64-unknown-linux-gnu, aarch64-unknown-linux-gnu
+                  components: clippy, rustfmt
+                  cache-directories: |
+                      ~/.cargo/registry
+                      ~/.cargo/bin
+                      target
+
+            - name: consult Clippy
+              run: cargo +stable clippy --all-targets
+
+            - name: check formatting
+              run: cargo +nightly fmt --check --all
+
+            - name: get cargo-nextest on path
+              shell: bash
+              run: |
+                  if [[ -z $(which cargo-nextest) ]]; then
+                    curl -sL https://get.nexte.st/latest/linux -o nextest.tgz
+                    tar xfz nextest.tgz
+                    mv cargo-nextest /home/runner/.cargo/bin
+                  fi
+
+            - name: run the tests
+              run: cargo nextest run -- --skip no_ci

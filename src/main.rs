@@ -9,7 +9,8 @@ use clap::Parser;
 use clap::builder::Styles;
 use clap::builder::styling::AnsiColor;
 use formulaic::{
-    Asset, AssetMatcher, FormulaContext, create_base_context, find_digest, get_binaries_from_manifest, render_to_string,
+    Asset, AssetMatcher, FormulaContext, GenericManifest, create_base_context, create_base_context_from_generic,
+    find_digest, get_binaries_from_manifest, parse_owner_repo, render_to_string,
 };
 use roctogen::endpoints::repos;
 use roctokit::adapters::client;
@@ -17,13 +18,15 @@ use roctokit::auth::Auth;
 
 #[derive(Debug, Clone, Parser)]
 #[clap(author, version, styles = v3_styles())]
-/// Generates Homebrew formula files for Rust binaries from their Cargo manifest.
+/// Generates Homebrew formula files for Rust binaries from their Cargo manifest,
+/// or for any project with a formulaic.toml file.
 ///
 /// Requires a valid github token in GITHUB_ACCESS_TOKEN or GITHUB_TOKEN.
 struct Args {
-    /// Path to the Cargo.toml file for the installable binary
-    #[arg(default_value = "./Cargo.toml")]
-    manifest: String,
+    /// Path to the manifest file (Cargo.toml or formulaic.toml).
+    /// If omitted, looks for .config/formulaic.toml, .formulaic.toml,
+    /// formulaic.toml, then Cargo.toml in the current directory.
+    manifest: Option<String>,
     /// Use the `gh` cli download strategy; useful for private tap repos
     #[arg(long = "gh-cli-strategy", short = 'g')]
     use_gh_strategy: bool,
@@ -42,6 +45,9 @@ struct Args {
     /// Preview formulas without writing files
     #[arg(long = "dry-run")]
     dry_run: bool,
+    /// Path to a custom formula template file (upon/Jinja2 syntax)
+    #[arg(long = "template", short = 't')]
+    template: Option<PathBuf>,
 }
 
 fn v3_styles() -> Styles {
@@ -52,27 +58,56 @@ fn v3_styles() -> Styles {
         .placeholder(AnsiColor::Green.on_default())
 }
 
-fn make_context_from_github(
+/// What kind of manifest we resolved.
+enum ResolvedManifest {
+    Cargo { path: String, manifest: Box<Manifest> },
+    Generic { manifest: GenericManifest },
+}
+
+/// Resolve which manifest to use.
+///
+/// 1. If a path is given explicitly, detect type by filename.
+/// 2. Otherwise try `.config/formulaic.toml`, `.formulaic.toml`,
+///    `formulaic.toml`, then `Cargo.toml` in cwd.
+fn resolve_manifest(explicit: Option<&str>) -> anyhow::Result<ResolvedManifest> {
+    if let Some(path) = explicit {
+        if path.ends_with("formulaic.toml") {
+            let manifest = GenericManifest::from_path(path.as_ref())?;
+            return Ok(ResolvedManifest::Generic { manifest });
+        }
+        let manifest = Manifest::from_path(path).with_context(|| format!("Failed to read manifest at {path}"))?;
+        return Ok(ResolvedManifest::Cargo {
+            path: path.to_string(),
+            manifest: Box::new(manifest),
+        });
+    }
+
+    // Auto-detect: try formulaic.toml variants, then Cargo.toml
+    let candidates = [".config/formulaic.toml", ".formulaic.toml", "formulaic.toml"];
+    for candidate in &candidates {
+        let path = PathBuf::from(candidate);
+        if path.exists() {
+            let manifest = GenericManifest::from_path(&path)?;
+            return Ok(ResolvedManifest::Generic { manifest });
+        }
+    }
+
+    let cargo_path = "./Cargo.toml";
+    let manifest = Manifest::from_path(cargo_path).with_context(
+        || "No formulaic.toml (or .formulaic.toml, .config/formulaic.toml) or Cargo.toml found in current directory",
+    )?;
+    Ok(ResolvedManifest::Cargo {
+        path: cargo_path.to_string(),
+        manifest: Box::new(manifest),
+    })
+}
+
+fn fetch_github_assets(
     context: &mut FormulaContext,
-    manifest: &Manifest,
+    owner: &str,
+    repo: &str,
     github: &roctokit::adapters::ureq::Client,
 ) -> anyhow::Result<()> {
-    let Some(ref package) = manifest.package else {
-        anyhow::bail!("The Rust project must have at least one package in it.");
-    };
-
-    let repository = package
-        .repository()
-        .with_context(|| "Package must have a repository field for GitHub API access")?;
-
-    let mut chunks: Vec<&str> = repository.split('/').collect();
-    let repo = chunks
-        .pop()
-        .with_context(|| "Invalid repository URL format")?
-        .trim_end_matches(".git");
-    let owner = chunks.pop().with_context(|| "Invalid repository URL format")?;
-
-    // Gather release information
     let repo_api = repos::new(github);
     let latest_release = repo_api
         .get_latest_release(owner, repo)
@@ -82,20 +117,15 @@ fn make_context_from_github(
 
     if let Some(ref assets) = latest_release.assets {
         for asset in assets {
-            // Only include assets that match the current binary exactly
             if let Some(ref asset_name) = asset.name {
                 let expected_prefix = format!("{}-", context.executable);
                 if asset_name.starts_with(&expected_prefix) {
                     let after_prefix = &asset_name[expected_prefix.len()..];
 
-                    // Check if what comes after the prefix starts with a target triple
-                    let is_direct_target = matcher
-                        .target_mappings
-                        .keys()
-                        .any(|target| after_prefix.starts_with(target));
-
-                    if is_direct_target && let Ok(mapped) = Asset::from_release_asset(asset, &matcher) {
-                        context.assets.push(mapped);
+                    if matcher.matches_target(after_prefix)
+                        && let Ok(mapped) = Asset::assets_from_release_asset(asset, &matcher)
+                    {
+                        context.assets.extend(mapped);
                     }
                 }
             }
@@ -109,39 +139,24 @@ fn make_context_from_github(
     Ok(())
 }
 
-fn make_context_local_new(
+fn fetch_local_assets(
     context: &mut FormulaContext,
-    manifest: &Manifest,
-    manifest_path: &str,
+    owner: &str,
+    repo: &str,
+    version: &str,
+    manifest_dir: &std::path::Path,
 ) -> anyhow::Result<()> {
-    let Some(ref package) = manifest.package else {
-        anyhow::bail!("The Rust project must have at least one package in it.");
-    };
+    let dist_dir = manifest_dir.join("dist");
 
-    let version = package.version().to_string();
-    let repository = package
-        .repository()
-        .with_context(|| "Package must have a repository field for local mode")?;
-
-    let mut chunks: Vec<&str> = repository.split('/').collect();
-    let repo = chunks
-        .pop()
-        .with_context(|| "Invalid repository URL format")?
-        .trim_end_matches(".git");
-    let owner = chunks.pop().with_context(|| "Invalid repository URL format")?;
-
-    // Look for .tar.gz files in dist/ directory at the same level as Cargo.toml
-    let mut dir = PathBuf::from(manifest_path);
-    dir.pop();
-    dir.push("dist");
-
-    if !dir.is_dir() {
-        anyhow::bail!("No dist/ directory found next to Cargo.toml for local mode");
+    if !dist_dir.is_dir() {
+        anyhow::bail!("No dist/ directory found at {} for local mode", dist_dir.display());
     }
 
     let matcher = AssetMatcher::new();
 
-    for entry in std::fs::read_dir(&dir).with_context(|| format!("Failed to read dist directory: {}", dir.display()))? {
+    for entry in std::fs::read_dir(&dist_dir)
+        .with_context(|| format!("Failed to read dist directory: {}", dist_dir.display()))?
+    {
         let entry = entry?;
         let fullpath = entry.path();
 
@@ -152,30 +167,26 @@ fn make_context_local_new(
 
             let basename_str = basename.to_string_lossy();
 
-            // Check if this asset matches our target platforms AND current binary exactly
             let expected_prefix = format!("{}-", context.executable);
             if basename_str.starts_with(&expected_prefix) {
-                // For "formulaic-", we want to match "formulaic-aarch64-apple-darwin.tar.gz"
-                // but NOT "formulaic-helper-aarch64-apple-darwin.tar.gz"
                 let after_prefix = &basename_str[expected_prefix.len()..];
 
-                // Check if what comes after the prefix starts with a target triple
-                let is_direct_target = matcher
-                    .target_mappings
-                    .keys()
-                    .any(|target| after_prefix.starts_with(target));
-
-                if is_direct_target && let Some((os, cpu)) = matcher.extract_platform(&basename_str) {
-                    let url = format!("https://github.com/{owner}/{repo}/releases/download/v{version}/{basename_str}");
-
-                    let path_str = fullpath.to_string_lossy();
-                    if let Ok(digest) = find_digest(&path_str, &url) {
-                        context.assets.push(Asset {
-                            cpu: cpu.to_string(),
-                            os: os.to_string(),
-                            digest,
-                            url,
-                        });
+                if matcher.matches_target(after_prefix) {
+                    let platforms = matcher.extract_platforms(&basename_str);
+                    if !platforms.is_empty() {
+                        let url =
+                            format!("https://github.com/{owner}/{repo}/releases/download/v{version}/{basename_str}");
+                        let path_str = fullpath.to_string_lossy();
+                        if let Ok(digest) = find_digest(&path_str, &url) {
+                            for (os, cpu) in platforms {
+                                context.assets.push(Asset {
+                                    cpu: cpu.to_string(),
+                                    os: os.to_string(),
+                                    digest: digest.clone(),
+                                    url: url.clone(),
+                                });
+                            }
+                        }
                     }
                 }
             }
@@ -191,11 +202,12 @@ fn make_context_local_new(
 
 fn render_formula(
     use_gh: bool,
+    custom_template: Option<&str>,
     context: &FormulaContext,
     output_dir: Option<&PathBuf>,
     dry_run: bool,
 ) -> anyhow::Result<String> {
-    let rendered = render_to_string(use_gh, context)?;
+    let rendered = render_to_string(use_gh, custom_template, context)?;
     let formula_filename = format!("{}.rb", context.executable);
 
     let formula_path = if let Some(dir) = output_dir {
@@ -229,6 +241,17 @@ fn render_formula(
 fn main() -> anyhow::Result<()> {
     let args = Args::parse();
 
+    // Load custom template if specified
+    let custom_template_content = if let Some(ref path) = args.template {
+        Some(
+            std::fs::read_to_string(path)
+                .with_context(|| format!("Failed to read template file {}", path.display()))?,
+        )
+    } else {
+        None
+    };
+    let custom_template = custom_template_content.as_deref();
+
     // Get GitHub token only if we're not in local mode
     let github_client = if !args.local {
         let token = std::env::var("GITHUB_ACCESS_TOKEN")
@@ -241,46 +264,97 @@ fn main() -> anyhow::Result<()> {
         None
     };
 
-    let manifest = cargo_toml::Manifest::from_path(&args.manifest)
-        .with_context(|| format!("Failed to read manifest at {}", args.manifest))?;
+    let resolved = resolve_manifest(args.manifest.as_deref())?;
 
-    // Get all binaries we should process
-    let binaries = get_binaries_from_manifest(&manifest, args.bin.as_deref())?;
+    match resolved {
+        ResolvedManifest::Generic { manifest } => {
+            let (owner, repo) = manifest.owner_repo()?;
+            let mut context = create_base_context_from_generic(&manifest);
 
-    // Check if we should process all binaries or just one
-    let process_all = args.all || (binaries.len() > 1 && args.bin.is_none());
-    let binaries_to_process = if process_all {
-        &binaries[..]
-    } else {
-        &binaries[..1] // Just the first one
-    };
+            if args.local {
+                // For generic manifests, use cwd as the manifest directory
+                let manifest_dir = if let Some(ref path) = args.manifest {
+                    let p = PathBuf::from(path);
+                    p.parent()
+                        .map(|d| d.to_path_buf())
+                        .unwrap_or_else(|| PathBuf::from("."))
+                } else {
+                    PathBuf::from(".")
+                };
+                fetch_local_assets(&mut context, &owner, &repo, &manifest.version, &manifest_dir)?;
+            } else if let Some(ref github) = github_client {
+                fetch_github_assets(&mut context, &owner, &repo, github)?;
+            } else {
+                anyhow::bail!("GitHub client not available");
+            }
 
-    let mut generated_files = Vec::new();
+            let use_gh = args.use_gh_strategy || manifest.use_gh_strategy.unwrap_or(false);
+            let formula_path = render_formula(
+                use_gh,
+                custom_template,
+                &context,
+                args.output_dir.as_ref(),
+                args.dry_run,
+            )?;
 
-    for binary in binaries_to_process {
-        let mut context = create_base_context(&manifest, binary)?;
-
-        // Populate assets based on mode
-        if args.local {
-            make_context_local_new(&mut context, &manifest, &args.manifest)?;
-        } else if let Some(ref github) = github_client {
-            make_context_from_github(&mut context, &manifest, github)?;
-        } else {
-            anyhow::bail!("GitHub client not available");
+            if !args.dry_run {
+                println!("{formula_path}");
+            }
         }
+        ResolvedManifest::Cargo { path, manifest } => {
+            let binaries = get_binaries_from_manifest(&manifest, args.bin.as_deref())?;
 
-        let formula_path = render_formula(args.use_gh_strategy, &context, args.output_dir.as_ref(), args.dry_run)?;
+            let process_all = args.all || (binaries.len() > 1 && args.bin.is_none());
+            let binaries_to_process = if process_all { &binaries[..] } else { &binaries[..1] };
 
-        generated_files.push(formula_path);
-    }
+            let Some(ref package) = manifest.package else {
+                anyhow::bail!("The Rust project must have at least one package in it.");
+            };
 
-    if !args.dry_run {
-        if generated_files.len() == 1 {
-            println!("{}", generated_files[0]);
-        } else {
-            println!("Generated {} formula files:", generated_files.len());
-            for file in &generated_files {
-                println!("  {file}");
+            let repository = package
+                .repository()
+                .with_context(|| "Package must have a repository field")?;
+            let (owner, repo) = parse_owner_repo(repository)?;
+
+            let mut generated_files = Vec::new();
+
+            for binary in binaries_to_process {
+                let mut context = create_base_context(&manifest, binary)?;
+
+                let version = context.version.clone();
+                if args.local {
+                    let manifest_dir = PathBuf::from(&path);
+                    let manifest_dir = manifest_dir
+                        .parent()
+                        .map(|d| d.to_path_buf())
+                        .unwrap_or_else(|| PathBuf::from("."));
+                    fetch_local_assets(&mut context, &owner, &repo, &version, &manifest_dir)?;
+                } else if let Some(ref github) = github_client {
+                    fetch_github_assets(&mut context, &owner, &repo, github)?;
+                } else {
+                    anyhow::bail!("GitHub client not available");
+                }
+
+                let formula_path = render_formula(
+                    args.use_gh_strategy,
+                    custom_template,
+                    &context,
+                    args.output_dir.as_ref(),
+                    args.dry_run,
+                )?;
+
+                generated_files.push(formula_path);
+            }
+
+            if !args.dry_run {
+                if generated_files.len() == 1 {
+                    println!("{}", generated_files[0]);
+                } else {
+                    println!("Generated {} formula files:", generated_files.len());
+                    for file in &generated_files {
+                        println!("  {file}");
+                    }
+                }
             }
         }
     }

@@ -1,0 +1,6 @@
+name = "paletter"
+version = "1.0.0"
+description = "Convert tinty YAML color palettes to macOS .clr files"
+homepage = "https://github.com/ceejbot/paletter"
+license = "Parity-7.0.0"
+repository = "https://github.com/ceejbot/paletter"

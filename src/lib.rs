@@ -1,12 +1,59 @@
 pub use std::collections::{BTreeMap, HashMap};
 use std::io::Read;
+use std::path::Path;
 
 pub use anyhow::{self, Context};
 pub use cargo_toml::Manifest;
+use serde::Deserialize;
 use sha2::{Digest, Sha256};
 
 static FORMULA_TMPL: &str = include_str!("formula.rb");
 static GH_FORMULA_TMPL: &str = include_str!("gh_strategy.rb");
+
+/// Metadata from a `formulaic.toml` file, for non-Cargo projects.
+#[derive(Debug, Clone, Deserialize)]
+pub struct GenericManifest {
+    pub name: String,
+    pub version: String,
+    #[serde(default)]
+    pub description: Option<String>,
+    #[serde(default)]
+    pub homepage: Option<String>,
+    #[serde(default)]
+    pub license: Option<String>,
+    #[serde(default)]
+    pub repository: Option<String>,
+}
+
+impl GenericManifest {
+    pub fn from_path(path: &Path) -> anyhow::Result<Self> {
+        let content =
+            std::fs::read_to_string(path).with_context(|| format!("Failed to read {}", path.display()))?;
+        let manifest: Self =
+            toml::from_str(&content).with_context(|| format!("Failed to parse {}", path.display()))?;
+        Ok(manifest)
+    }
+
+    /// Extract (owner, repo) from the repository URL.
+    pub fn owner_repo(&self) -> anyhow::Result<(String, String)> {
+        let repository = self
+            .repository
+            .as_deref()
+            .with_context(|| "formulaic.toml must have a repository field")?;
+        parse_owner_repo(repository)
+    }
+}
+
+/// Parse a GitHub repository URL into (owner, repo).
+pub fn parse_owner_repo(repository: &str) -> anyhow::Result<(String, String)> {
+    let mut chunks: Vec<&str> = repository.split('/').collect();
+    let repo = chunks
+        .pop()
+        .with_context(|| "Invalid repository URL format")?
+        .trim_end_matches(".git");
+    let owner = chunks.pop().with_context(|| "Invalid repository URL format")?;
+    Ok((owner.to_string(), repo.to_string()))
+}
 
 #[derive(Debug, Clone)]
 pub struct BinaryInfo {
@@ -65,6 +112,30 @@ impl AssetMatcher {
             }
         }
         None
+    }
+
+    /// Check if an asset name refers to a universal (fat) macOS binary.
+    pub fn is_universal(&self, asset_name: &str) -> bool {
+        asset_name.contains("universal-apple-darwin")
+    }
+
+    /// Extract all platforms an asset supports. Universal macOS binaries
+    /// expand to both arm and intel entries.
+    pub fn extract_platforms(&self, asset_name: &str) -> Vec<(&'static str, &'static str)> {
+        if self.is_universal(asset_name) {
+            return vec![("mac", "arm"), ("mac", "intel")];
+        }
+        self.extract_platform(asset_name).into_iter().collect()
+    }
+
+    /// Check whether the portion of the filename after the binary name prefix
+    /// matches a known target triple or a universal binary pattern.
+    pub fn matches_target(&self, after_prefix: &str) -> bool {
+        after_prefix.starts_with("universal-apple-darwin")
+            || self
+                .target_mappings
+                .keys()
+                .any(|target| after_prefix.starts_with(target))
     }
 }
 
@@ -130,6 +201,23 @@ pub fn create_base_context(manifest: &Manifest, binary: &BinaryInfo) -> anyhow::
     })
 }
 
+pub fn create_base_context_from_generic(manifest: &GenericManifest) -> FormulaContext {
+    use heck::ToUpperCamelCase;
+
+    FormulaContext {
+        package: manifest.name.to_upper_camel_case(),
+        description: manifest.description.clone().unwrap_or_default(),
+        executable: manifest.name.clone(),
+        homepage: manifest.homepage.clone().unwrap_or_default(),
+        version: manifest.version.clone(),
+        license: manifest
+            .license
+            .clone()
+            .unwrap_or_else(|| "unlicensed".to_string()),
+        assets: Vec::new(),
+    }
+}
+
 impl Asset {
     pub fn from_release_asset(v: &roctogen::models::ReleaseAsset, matcher: &AssetMatcher) -> anyhow::Result<Self> {
         let filename = v
@@ -169,6 +257,55 @@ impl Asset {
             digest,
             url: url.to_owned(),
         })
+    }
+
+    /// Create assets from a release asset that may be a universal binary.
+    /// Universal binaries produce two assets (arm + intel); others produce one.
+    pub fn assets_from_release_asset(
+        v: &roctogen::models::ReleaseAsset,
+        matcher: &AssetMatcher,
+    ) -> anyhow::Result<Vec<Self>> {
+        let filename = v
+            .name
+            .as_ref()
+            .with_context(|| format!("asset {:?} has an empty name", v.id))?;
+
+        if !filename.ends_with(".tar.gz") {
+            anyhow::bail!("asset {:?} is not a tarball", v.id);
+        }
+
+        let url = v
+            .browser_download_url
+            .as_ref()
+            .with_context(|| format!("asset {:?} doesn't have a download url", v.id))?;
+
+        let digest = if let Some(ref digest) = v.digest {
+            digest.split_once(':').map(|split| split.1.to_owned())
+        } else {
+            None
+        };
+
+        let digest = if let Some(d) = digest {
+            d
+        } else {
+            find_digest(filename.as_str(), url.as_str())
+                .with_context(|| format!("Cannot calculate digest for asset {filename}"))?
+        };
+
+        let platforms = matcher.extract_platforms(filename);
+        if platforms.is_empty() {
+            anyhow::bail!("Cannot determine platform for asset {filename}");
+        }
+
+        Ok(platforms
+            .into_iter()
+            .map(|(os, cpu)| Self {
+                cpu: cpu.to_string(),
+                os: os.to_string(),
+                digest: digest.clone(),
+                url: url.to_owned(),
+            })
+            .collect())
     }
 }
 
@@ -230,9 +367,15 @@ pub fn find_digest(filename: &str, url: &str) -> anyhow::Result<String> {
     Ok(hex::encode(digest))
 }
 
-pub fn render_to_string(use_gh: bool, context: &FormulaContext) -> anyhow::Result<String> {
+pub fn render_to_string(
+    use_gh: bool,
+    custom_template: Option<&str>,
+    context: &FormulaContext,
+) -> anyhow::Result<String> {
     let mut engine = upon::Engine::new();
-    if use_gh {
+    if let Some(tmpl) = custom_template {
+        engine.add_template("formula", tmpl)?;
+    } else if use_gh {
         engine.add_template("formula", GH_FORMULA_TMPL)?;
     } else {
         engine.add_template("formula", FORMULA_TMPL)?;

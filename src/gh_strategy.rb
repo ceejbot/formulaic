@@ -92,7 +92,11 @@ class {{package}} < Formula
 
     def install
 {%- for asset in assets %}
-        bin.install "{{ executable }}" if OS.{{ asset.os }}? && Hardware::CPU.{{ asset.cpu }}?
+        if OS.{{ asset.os }}? && Hardware::CPU.{{ asset.cpu }}?
+{%- for exe in executables %}
+            bin.install {{ exe }}
+{%- endfor %}
+        end
 {%- endfor %}
 
         install_binary_aliases!
@@ -100,4 +104,12 @@ class {{package}} < Formula
         leftover_contents = Dir["*"] - doc_files
         pkgshare.install(*leftover_contents) unless leftover_contents.empty?
     end
+{%- if caveats %}
+
+    def caveats
+        <<~EOS
+            {{ caveats }}
+        EOS
+    end
+{%- endif %}
 end

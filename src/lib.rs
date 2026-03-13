@@ -25,6 +25,10 @@ pub struct GenericManifest {
     pub repository: Option<String>,
     #[serde(default, rename = "gh-cli-strategy")]
     pub use_gh_strategy: Option<bool>,
+    #[serde(default)]
+    pub bins: Option<BTreeMap<String, String>>,
+    #[serde(default)]
+    pub caveats: Option<String>,
 }
 
 impl GenericManifest {
@@ -74,9 +78,11 @@ pub struct FormulaContext {
     pub package: String,
     pub description: String,
     pub executable: String,
+    pub executables: Vec<String>,
     pub homepage: String,
     pub version: String,
     pub license: String,
+    pub caveats: Option<String>,
     pub assets: Vec<Asset>,
 }
 
@@ -194,9 +200,11 @@ pub fn create_base_context(manifest: &Manifest, binary: &BinaryInfo) -> anyhow::
         package: binary.name.to_upper_camel_case(),
         description,
         executable: binary.name.clone(),
+        executables: vec![format!("\"{}\"", binary.name)],
         homepage,
         version: package.version().to_string(),
         license,
+        caveats: None,
         assets: Vec::new(), // we'll populate this later
     })
 }
@@ -204,13 +212,29 @@ pub fn create_base_context(manifest: &Manifest, binary: &BinaryInfo) -> anyhow::
 pub fn create_base_context_from_generic(manifest: &GenericManifest) -> FormulaContext {
     use heck::ToUpperCamelCase;
 
+    let executables = match &manifest.bins {
+        Some(bins) => bins
+            .iter()
+            .map(|(name, path)| {
+                if name == path {
+                    format!("\"{name}\"")
+                } else {
+                    format!("\"{path}\" => \"{name}\"")
+                }
+            })
+            .collect(),
+        None => vec![format!("\"{}\"", manifest.name)],
+    };
+
     FormulaContext {
         package: manifest.name.to_upper_camel_case(),
         description: manifest.description.clone().unwrap_or_default(),
         executable: manifest.name.clone(),
+        executables,
         homepage: manifest.homepage.clone().unwrap_or_default(),
         version: manifest.version.clone(),
         license: manifest.license.clone().unwrap_or_else(|| "unlicensed".to_string()),
+        caveats: manifest.caveats.clone(),
         assets: Vec::new(),
     }
 }
@@ -386,6 +410,8 @@ pub fn render_to_string(
     map.insert("homepage", context.homepage.clone().into());
     map.insert("version", context.version.clone().into());
     map.insert("license", context.license.clone().into());
+    map.insert("executables", context.executables.clone().into());
+    map.insert("caveats", context.caveats.clone().unwrap_or_default().into());
     map.insert("assets", context.assets.clone().into());
 
     let values = upon::to_value(map)?;

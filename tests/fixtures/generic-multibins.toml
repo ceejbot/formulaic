@@ -1,0 +1,9 @@
+name = "my-project"
+version = "2.0.0"
+description = "A project with multiple binaries"
+repository = "https://github.com/owner/my-project"
+license = "MIT"
+
+[bins]
+tool-a = "tool-a"
+tool-b = "bin/tool-b"

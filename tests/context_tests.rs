@@ -29,6 +29,8 @@ fn can_render_template() {
         license: "MIT".to_string(),
         homepage: "https://example.com".to_string(),
         executable: "frobber".to_string(),
+        executables: vec!["\"frobber\"".to_string()],
+        caveats: None,
         assets: vec![
             Asset {
                 os: "mac".to_string(),
@@ -47,7 +49,8 @@ fn can_render_template() {
     let rendered = render_to_string(false, None, &context).expect("rendering the template failed");
     eprintln!("{rendered}");
     assert!(rendered.contains("sha256 \"cafed00d\""));
-    assert!(rendered.contains("bin.install \"frobber\" if OS.mac?"));
+    assert!(rendered.contains("if OS.mac? && Hardware::CPU.arm?"));
+    assert!(rendered.contains("bin.install \"frobber\""));
 }
 
 #[test]
@@ -59,6 +62,8 @@ fn can_render_custom_template() {
         license: "MIT".to_string(),
         homepage: "https://example.com".to_string(),
         executable: "my-tool".to_string(),
+        executables: vec!["\"my-tool\"".to_string()],
+        caveats: None,
         assets: vec![Asset {
             os: "mac".to_string(),
             cpu: "arm".to_string(),
@@ -291,6 +296,7 @@ fn create_context_from_generic_manifest() {
 
     assert_eq!(context.package, "Paletter");
     assert_eq!(context.executable, "paletter");
+    assert_eq!(context.executables, vec!["\"paletter\""]);
     assert_eq!(
         context.description,
         "Convert tinty YAML color palettes to macOS .clr files"
@@ -308,6 +314,7 @@ fn create_context_from_generic_minimal() {
 
     assert_eq!(context.package, "MinimalTool");
     assert_eq!(context.executable, "minimal-tool");
+    assert_eq!(context.executables, vec!["\"minimal-tool\""]);
     assert_eq!(context.description, "");
     assert_eq!(context.homepage, "");
     assert_eq!(context.version, "0.1.0");
@@ -366,4 +373,132 @@ fn workspace_member_context() {
     // This test is disabled because cargo_toml requires workspace members
     // to be part of an actual workspace directory structure
     // TODO: Create proper workspace test setup
+}
+
+#[test]
+fn generic_manifest_with_bins() {
+    let manifest = load_generic_fixture("generic-multibins");
+
+    assert_eq!(manifest.name, "my-project");
+    let bins = manifest.bins.as_ref().expect("bins should be present");
+    assert_eq!(bins.len(), 2);
+    assert_eq!(bins.get("tool-a").map(|s| s.as_str()), Some("tool-a"));
+    assert_eq!(bins.get("tool-b").map(|s| s.as_str()), Some("bin/tool-b"));
+}
+
+#[test]
+fn create_context_from_generic_with_bins() {
+    let manifest = load_generic_fixture("generic-multibins");
+    let context = create_base_context_from_generic(&manifest);
+
+    assert_eq!(context.executable, "my-project");
+    assert_eq!(context.executables.len(), 2);
+    assert!(context.executables.contains(&"\"tool-a\"".to_string()));
+    assert!(
+        context
+            .executables
+            .contains(&"\"bin/tool-b\" => \"tool-b\"".to_string())
+    );
+}
+
+#[test]
+fn render_template_multiple_bins() {
+    let context = FormulaContext {
+        package: "MyProject".to_string(),
+        description: "A multi-bin project".to_string(),
+        version: "2.0.0".to_string(),
+        license: "MIT".to_string(),
+        homepage: "https://example.com".to_string(),
+        executable: "my-project".to_string(),
+        executables: vec!["\"tool-a\"".to_string(), "\"bin/tool-b\" => \"tool-b\"".to_string()],
+        caveats: None,
+        assets: vec![Asset {
+            os: "mac".to_string(),
+            cpu: "arm".to_string(),
+            url: "https://example.com/asset.tar.gz".to_string(),
+            digest: "abc123".to_string(),
+        }],
+    };
+
+    let rendered = render_to_string(false, None, &context).expect("rendering failed");
+    eprintln!("{rendered}");
+    assert!(rendered.contains("bin.install \"tool-a\""));
+    assert!(rendered.contains("bin.install \"bin/tool-b\" => \"tool-b\""));
+}
+
+#[test]
+fn generic_bins_fallback() {
+    let manifest = load_generic_fixture("generic-manifest");
+    assert!(manifest.bins.is_none());
+
+    let context = create_base_context_from_generic(&manifest);
+    assert_eq!(context.executables, vec!["\"paletter\""]);
+}
+
+#[test]
+fn generic_manifest_with_caveats() {
+    let manifest = load_generic_fixture("generic-caveats");
+
+    assert_eq!(manifest.name, "caveated-tool");
+    assert_eq!(
+        manifest.caveats.as_deref(),
+        Some("You must add ~/.caveated-tool/bin to your PATH.")
+    );
+}
+
+#[test]
+fn generic_manifest_without_caveats() {
+    let manifest = load_generic_fixture("generic-manifest");
+    assert!(manifest.caveats.is_none());
+
+    let context = create_base_context_from_generic(&manifest);
+    assert!(context.caveats.is_none());
+}
+
+#[test]
+fn render_template_with_caveats() {
+    let context = FormulaContext {
+        package: "CaveatedTool".to_string(),
+        description: "A tool with caveats".to_string(),
+        version: "1.0.0".to_string(),
+        license: "MIT".to_string(),
+        homepage: "https://example.com".to_string(),
+        executable: "caveated-tool".to_string(),
+        executables: vec!["\"caveated-tool\"".to_string()],
+        caveats: Some("You must add ~/.caveated-tool/bin to your PATH.".to_string()),
+        assets: vec![Asset {
+            os: "mac".to_string(),
+            cpu: "arm".to_string(),
+            url: "https://example.com/asset.tar.gz".to_string(),
+            digest: "abc123".to_string(),
+        }],
+    };
+
+    let rendered = render_to_string(false, None, &context).expect("rendering failed");
+    eprintln!("{rendered}");
+    assert!(rendered.contains("def caveats"));
+    assert!(rendered.contains("You must add ~/.caveated-tool/bin to your PATH."));
+}
+
+#[test]
+fn render_template_without_caveats() {
+    let context = FormulaContext {
+        package: "NoCaveats".to_string(),
+        description: "No caveats here".to_string(),
+        version: "1.0.0".to_string(),
+        license: "MIT".to_string(),
+        homepage: "https://example.com".to_string(),
+        executable: "no-caveats".to_string(),
+        executables: vec!["\"no-caveats\"".to_string()],
+        caveats: None,
+        assets: vec![Asset {
+            os: "mac".to_string(),
+            cpu: "arm".to_string(),
+            url: "https://example.com/asset.tar.gz".to_string(),
+            digest: "abc123".to_string(),
+        }],
+    };
+
+    let rendered = render_to_string(false, None, &context).expect("rendering failed");
+    assert!(!rendered.contains("def caveats"));
 }

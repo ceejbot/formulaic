@@ -1,0 +1,6 @@
+name = "caveated-tool"
+version = "1.0.0"
+description = "A tool with post-install caveats"
+repository = "https://github.com/owner/caveated-tool"
+license = "MIT"
+caveats = "You must add ~/.caveated-tool/bin to your PATH."

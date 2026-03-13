@@ -1,4 +1,4 @@
-pub use std::collections::{BTreeMap, HashMap};
+use std::collections::BTreeMap;
 use std::io::Read;
 use std::path::Path;
 
@@ -43,7 +43,7 @@ impl GenericManifest {
         let repository = self
             .repository
             .as_deref()
-            .with_context(|| "formulaic.toml must have a repository field")?;
+            .context("formulaic.toml must have a repository field")?;
         parse_owner_repo(repository)
     }
 }
@@ -53,7 +53,7 @@ pub fn parse_owner_repo(repository: &str) -> anyhow::Result<(String, String)> {
     let mut chunks: Vec<&str> = repository.split('/').collect();
     let repo = chunks
         .pop()
-        .with_context(|| "Invalid repository URL format")?
+        .context("Invalid repository URL format")?
         .trim_end_matches(".git");
     let owner = chunks.pop().with_context(|| "Invalid repository URL format")?;
     Ok((owner.to_string(), repo.to_string()))
@@ -86,38 +86,27 @@ pub struct FormulaContext {
     pub assets: Vec<Asset>,
 }
 
-#[derive(Debug)]
-pub struct AssetMatcher {
-    pub target_mappings: HashMap<&'static str, (&'static str, &'static str)>,
-}
+/// Homebrew-specific platform mappings: (target triple, os, cpu).
+const TARGET_MAPPINGS: &[(&str, &str, &str)] = &[
+    ("aarch64-apple-darwin", "mac", "arm"),
+    ("x86_64-apple-darwin", "mac", "intel"),
+    ("x86_64-unknown-linux-gnu", "linux", "intel"),
+    ("aarch64-unknown-linux-gnu", "linux", "arm"),
+];
 
-impl Default for AssetMatcher {
-    fn default() -> Self {
-        Self::new()
-    }
-}
+#[derive(Debug, Default)]
+pub struct AssetMatcher;
 
 impl AssetMatcher {
     pub fn new() -> Self {
-        let mut mappings = HashMap::new();
-        // Homebrew-specific platform mappings
-        mappings.insert("aarch64-apple-darwin", ("mac", "arm"));
-        mappings.insert("x86_64-apple-darwin", ("mac", "intel"));
-        mappings.insert("x86_64-unknown-linux-gnu", ("linux", "intel"));
-        mappings.insert("aarch64-unknown-linux-gnu", ("linux", "arm"));
-
-        Self {
-            target_mappings: mappings,
-        }
+        Self
     }
 
     pub fn extract_platform(&self, asset_name: &str) -> Option<(&'static str, &'static str)> {
-        for (target, (os, cpu)) in &self.target_mappings {
-            if asset_name.contains(target) {
-                return Some((*os, *cpu));
-            }
-        }
-        None
+        TARGET_MAPPINGS
+            .iter()
+            .find(|(target, _, _)| asset_name.contains(target))
+            .map(|(_, os, cpu)| (*os, *cpu))
     }
 
     /// Check if an asset name refers to a universal (fat) macOS binary.
@@ -138,10 +127,9 @@ impl AssetMatcher {
     /// matches a known target triple or a universal binary pattern.
     pub fn matches_target(&self, after_prefix: &str) -> bool {
         after_prefix.starts_with("universal-apple-darwin")
-            || self
-                .target_mappings
-                .keys()
-                .any(|target| after_prefix.starts_with(target))
+            || TARGET_MAPPINGS
+                .iter()
+                .any(|(target, _, _)| after_prefix.starts_with(target))
     }
 }
 
@@ -239,44 +227,59 @@ pub fn create_base_context_from_generic(manifest: &GenericManifest) -> FormulaCo
     }
 }
 
+/// Validated fields extracted from a GitHub release asset.
+struct RawAssetInfo {
+    filename: String,
+    url: String,
+    digest: String,
+}
+
+/// Extract and validate filename, URL, and digest from a release asset.
+fn extract_asset_info(v: &roctogen::models::ReleaseAsset) -> anyhow::Result<RawAssetInfo> {
+    let filename = v
+        .name
+        .as_ref()
+        .with_context(|| format!("asset {:?} has an empty name", v.id))?;
+
+    if !filename.ends_with(".tar.gz") {
+        anyhow::bail!("asset {:?} is not a tarball", v.id);
+    }
+
+    let url = v
+        .browser_download_url
+        .as_ref()
+        .with_context(|| format!("asset {:?} doesn't have a download url", v.id))?;
+
+    let digest = v
+        .digest
+        .as_deref()
+        .and_then(|d| d.split_once(':').map(|(_, hash)| hash.to_owned()));
+
+    let digest = match digest {
+        Some(d) => d,
+        None => find_digest(filename, url).with_context(|| format!("Cannot calculate digest for asset {filename}"))?,
+    };
+
+    Ok(RawAssetInfo {
+        filename: filename.clone(),
+        url: url.clone(),
+        digest,
+    })
+}
+
 impl Asset {
     pub fn from_release_asset(v: &roctogen::models::ReleaseAsset, matcher: &AssetMatcher) -> anyhow::Result<Self> {
-        let filename = v
-            .name
-            .as_ref()
-            .with_context(|| format!("asset {:?} has an empty name", v.id))?;
-
-        if !filename.ends_with(".tar.gz") {
-            anyhow::bail!("asset {:?} is not a tarball", v.id);
-        }
-
-        let url = v
-            .browser_download_url
-            .as_ref()
-            .with_context(|| format!("asset {:?} doesn't have a download url", v.id))?;
-
-        let digest = if let Some(ref digest) = v.digest {
-            digest.split_once(':').map(|split| split.1.to_owned())
-        } else {
-            None
-        };
-
-        let digest = if let Some(d) = digest {
-            d
-        } else {
-            find_digest(filename.as_str(), url.as_str())
-                .with_context(|| format!("Cannot calculate digest for asset {filename}"))?
-        };
+        let info = extract_asset_info(v)?;
 
         let (os, cpu) = matcher
-            .extract_platform(filename)
-            .with_context(|| format!("Cannot determine platform for asset {filename}"))?;
+            .extract_platform(&info.filename)
+            .with_context(|| format!("Cannot determine platform for asset {}", info.filename))?;
 
         Ok(Self {
             cpu: cpu.to_string(),
             os: os.to_string(),
-            digest,
-            url: url.to_owned(),
+            digest: info.digest,
+            url: info.url,
         })
     }
 
@@ -286,36 +289,11 @@ impl Asset {
         v: &roctogen::models::ReleaseAsset,
         matcher: &AssetMatcher,
     ) -> anyhow::Result<Vec<Self>> {
-        let filename = v
-            .name
-            .as_ref()
-            .with_context(|| format!("asset {:?} has an empty name", v.id))?;
+        let info = extract_asset_info(v)?;
 
-        if !filename.ends_with(".tar.gz") {
-            anyhow::bail!("asset {:?} is not a tarball", v.id);
-        }
-
-        let url = v
-            .browser_download_url
-            .as_ref()
-            .with_context(|| format!("asset {:?} doesn't have a download url", v.id))?;
-
-        let digest = if let Some(ref digest) = v.digest {
-            digest.split_once(':').map(|split| split.1.to_owned())
-        } else {
-            None
-        };
-
-        let digest = if let Some(d) = digest {
-            d
-        } else {
-            find_digest(filename.as_str(), url.as_str())
-                .with_context(|| format!("Cannot calculate digest for asset {filename}"))?
-        };
-
-        let platforms = matcher.extract_platforms(filename);
+        let platforms = matcher.extract_platforms(&info.filename);
         if platforms.is_empty() {
-            anyhow::bail!("Cannot determine platform for asset {filename}");
+            anyhow::bail!("Cannot determine platform for asset {}", info.filename);
         }
 
         Ok(platforms
@@ -323,21 +301,34 @@ impl Asset {
             .map(|(os, cpu)| Self {
                 cpu: cpu.to_string(),
                 os: os.to_string(),
-                digest: digest.clone(),
-                url: url.to_owned(),
+                digest: info.digest.clone(),
+                url: info.url.clone(),
             })
             .collect())
     }
 }
 
+fn asset_to_value(cpu: &str, os: &str, digest: &str, url: &str) -> upon::Value {
+    [
+        ("cpu".to_string(), cpu.to_string()),
+        ("os".to_string(), os.to_string()),
+        ("sha256".to_string(), digest.to_string()),
+        ("url".to_string(), url.to_string()),
+    ]
+    .into_iter()
+    .collect::<BTreeMap<String, String>>()
+    .into()
+}
+
 impl From<Asset> for upon::Value {
     fn from(v: Asset) -> Self {
-        let mut result: BTreeMap<String, String> = BTreeMap::new();
-        result.insert("cpu".to_string(), v.cpu);
-        result.insert("os".to_string(), v.os);
-        result.insert("sha256".to_string(), v.digest);
-        result.insert("url".to_string(), v.url);
-        result.into()
+        asset_to_value(&v.cpu, &v.os, &v.digest, &v.url)
+    }
+}
+
+impl From<&Asset> for upon::Value {
+    fn from(v: &Asset) -> Self {
+        asset_to_value(&v.cpu, &v.os, &v.digest, &v.url)
     }
 }
 
@@ -364,7 +355,7 @@ pub fn find_digest(filename: &str, url: &str) -> anyhow::Result<String> {
                     return Ok(slice.to_string());
                 }
                 if let Some(loc) = digest.rfind(" = ") {
-                    let (_first, digest) = digest.split_at(loc + 3);
+                    let (_, digest) = digest.split_at(loc + 3);
                     return Ok(digest.trim().to_string());
                 }
             }
@@ -374,7 +365,7 @@ pub fn find_digest(filename: &str, url: &str) -> anyhow::Result<String> {
     // try a local tarball
     if let Ok(mut fp) = std::fs::File::open(filename) {
         let mut buffer: Vec<u8> = Vec::new();
-        if let Ok(_length) = fp.read(&mut buffer) {
+        if fp.read_to_end(&mut buffer).is_ok() {
             let digest = Sha256::digest(&buffer);
             return Ok(hex::encode(digest));
         }
@@ -404,15 +395,15 @@ pub fn render_to_string(
 
     // Convert FormulaContext to upon::Value
     let mut map: BTreeMap<&str, upon::Value> = BTreeMap::new();
-    map.insert("package", context.package.clone().into());
-    map.insert("description", context.description.clone().into());
-    map.insert("executable", context.executable.clone().into());
-    map.insert("homepage", context.homepage.clone().into());
-    map.insert("version", context.version.clone().into());
-    map.insert("license", context.license.clone().into());
-    map.insert("executables", context.executables.clone().into());
-    map.insert("caveats", context.caveats.clone().unwrap_or_default().into());
-    map.insert("assets", context.assets.clone().into());
+    map.insert("package", context.package.as_str().into());
+    map.insert("description", context.description.as_str().into());
+    map.insert("executable", context.executable.as_str().into());
+    map.insert("homepage", context.homepage.as_str().into());
+    map.insert("version", context.version.as_str().into());
+    map.insert("license", context.license.as_str().into());
+    map.insert("executables", context.executables.iter().map(|s| s.as_str()).collect());
+    map.insert("caveats", context.caveats.as_deref().unwrap_or_default().into());
+    map.insert("assets", context.assets.iter().map(upon::Value::from).collect());
 
     let values = upon::to_value(map)?;
     Ok(engine.template("formula").render(&values).to_string()?)

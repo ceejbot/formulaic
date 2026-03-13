@@ -93,8 +93,8 @@ fn resolve_manifest(explicit: Option<&str>) -> anyhow::Result<ResolvedManifest> 
     }
 
     let cargo_path = "./Cargo.toml";
-    let manifest = Manifest::from_path(cargo_path).with_context(
-        || "No formulaic.toml (or .formulaic.toml, .config/formulaic.toml) or Cargo.toml found in current directory",
+    let manifest = Manifest::from_path(cargo_path).context(
+        "No formulaic.toml (or .formulaic.toml, .config/formulaic.toml) or Cargo.toml found in current directory",
     )?;
     Ok(ResolvedManifest::Cargo {
         path: cargo_path.to_string(),
@@ -256,7 +256,7 @@ fn main() -> anyhow::Result<()> {
     let github_client = if !args.local {
         let token = std::env::var("GITHUB_ACCESS_TOKEN")
             .or_else(|_| std::env::var("GITHUB_TOKEN"))
-            .with_context(|| "GitHub token required in GITHUB_ACCESS_TOKEN or GITHUB_TOKEN")?;
+            .context("GitHub token required in GITHUB_ACCESS_TOKEN or GITHUB_TOKEN")?;
 
         let auth = Auth::Token(token);
         Some(client(&auth)?)
@@ -311,9 +311,7 @@ fn main() -> anyhow::Result<()> {
                 anyhow::bail!("The Rust project must have at least one package in it.");
             };
 
-            let repository = package
-                .repository()
-                .with_context(|| "Package must have a repository field")?;
+            let repository = package.repository().context("Package must have a repository field")?;
             let (owner, repo) = parse_owner_repo(repository)?;
 
             let mut generated_files = Vec::new();

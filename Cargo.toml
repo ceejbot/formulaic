@@ -3,6 +3,7 @@ name = "formulaic"
 description = "Update a Homebrew tap formula for a project from a manifest or Cargo.toml."
 version = "0.7.0"
 edition = "2024"
+version = "1.88.0"
 authors = ["C J Silverio <ceejceej@gmail.com>"]
 license = "Parity-7.0.0"
 readme = "README.md"

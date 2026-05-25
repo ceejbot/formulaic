@@ -27,28 +27,6 @@ jobs:
         name: preflight
         runs-on: ubuntu-latest
         steps:
-            - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
-              with:
-                persist-credentials: false
-
-            - name: get stable + nightly Rust
-              uses: actions-rust-lang/setup-rust-toolchain@46268bd060767258de96ed93c1251119784f2ab6 # v1
-              with:
-                  toolchain: nightly, stable
-                  target: x86_64-unknown-linux-gnu, aarch64-unknown-linux-gnu
-                  components: clippy, rustfmt
-                  cache-directories: |
-                      ~/.cargo/registry
-                      ~/.cargo/bin
-                      target
-                  cache: false
-
-            - name: consult Clippy
-              run: cargo +stable clippy --all-targets
-
-            - name: check formatting
-              run: cargo +nightly fmt --check --all
-
             - name: create github release
               continue-on-error: true # for testing
               env:

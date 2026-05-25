@@ -25,7 +25,7 @@ jobs:
         runs-on: ubuntu-latest
         strategy:
           matrix:
-            rust: [stable, "1.85"]
+            rust: [stable, "1.88"]
           fail-fast: false
         steps:
             - name: checkout

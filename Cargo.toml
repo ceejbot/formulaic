@@ -11,14 +11,14 @@ homepage = "https://github.com/ceejbot/formulaic"
 
 [dependencies]
 anyhow = "1.0.98"
-cargo_toml = "0.22.1"
+cargo_toml = "1"
 clap = { version = "4.5.39", features = ["derive", "wrap_help"] }
 heck = "0.5.0"
 hex = "0.4.3"
 roctogen = "0.50.0"
 roctokit = { version = "0.15.0", features = ["ureq"] }
 serde = { version = "1", features = ["derive"] }
-sha2 = "0.10.9"
+sha2 = "0.11"
 toml = "1.0"
 upon = "0.10.0"
 ureq = "3.0.11"

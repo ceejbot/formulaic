@@ -55,7 +55,7 @@ jobs:
                   fi
 
             - name: run the tests
-              run: cargo nextest run --workspace --all-targets --future-incompat-report -- --skip no_ci
+              run: cargo nextest run --workspace --all-targets --future-incompat-report
 
     fmt:
         name: formatting check

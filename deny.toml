@@ -1,0 +1,38 @@
+# Supply-chain gate for `cargo deny check`.
+# https://embarkstudios.github.io/cargo-deny/
+
+[advisories]
+ignore = [
+    # wee_alloc is a wasm-only allocator pulled in transitively by roctogen and
+    # roctokit. It is never compiled into formulaic's native macOS/Linux
+    # binaries, and the advisory has no safe upgrade. Revisit if those crates
+    # drop the dependency.
+    { id = "RUSTSEC-2022-0054", reason = "wasm-only transitive dep, not reachable on native targets; no safe upgrade exists" },
+]
+
+[licenses]
+# formulaic itself is Parity-7.0.0 (not an SPDX identifier) and is publish = false,
+# so skip license evaluation of our own private crate.
+private = { ignore = true }
+# Permissive licenses present in the dependency tree.
+allow = [
+    "0BSD",
+    "Apache-2.0",
+    "Apache-2.0 WITH LLVM-exception",
+    "BSD-3-Clause",
+    "BSL-1.0",
+    "CDLA-Permissive-2.0",
+    "ISC",
+    "MIT",
+    "MPL-2.0",
+    "Unicode-3.0",
+    "Unlicense",
+    "Zlib",
+]
+
+[bans]
+multiple-versions = "warn"
+
+[sources]
+unknown-registry = "deny"
+unknown-git = "deny"

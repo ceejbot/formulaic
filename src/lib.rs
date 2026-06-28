@@ -8,7 +8,9 @@ use serde::Deserialize;
 use sha2::{Digest, Sha256};
 
 static FORMULA_TMPL: &str = include_str!("formula.rb");
-static GH_FORMULA_TMPL: &str = include_str!("gh_strategy.rb");
+/// The gh-cli download-strategy class, prepended to the formula when the
+/// `--gh-cli-strategy` flag (or `gh-cli-strategy = true`) is in effect.
+static GH_DOWNLOAD_STRATEGY: &str = include_str!("gh_download_strategy.rb");
 
 /// Metadata from a `formulaic.toml` file, for non-Cargo projects.
 #[derive(Debug, Clone, Deserialize)]
@@ -59,12 +61,15 @@ pub fn parse_owner_repo(repository: &str) -> anyhow::Result<(String, String)> {
     Ok((owner.to_string(), repo.to_string()))
 }
 
+/// A binary target to generate a formula for, paired with its owning package.
 #[derive(Debug, Clone)]
 pub struct BinaryInfo {
     pub name: String,
     pub package_name: String,
 }
 
+/// A single download entry in a formula: one `(os, cpu)` target with the URL
+/// to fetch and the SHA-256 digest to verify it against.
 #[derive(Debug, Clone)]
 pub struct Asset {
     pub cpu: String,
@@ -73,6 +78,7 @@ pub struct Asset {
     pub url: String,
 }
 
+/// Everything the formula template needs to render a single formula.
 #[derive(Debug, Clone)]
 pub struct FormulaContext {
     pub package: String,
@@ -133,6 +139,9 @@ impl AssetMatcher {
     }
 }
 
+/// Collect the binary targets from a Cargo manifest, optionally narrowing to a
+/// single named binary. Errors if the manifest has no package, declares no
+/// binaries, or names a `target_bin` that doesn't exist.
 pub fn get_binaries_from_manifest(manifest: &Manifest, target_bin: Option<&str>) -> anyhow::Result<Vec<BinaryInfo>> {
     let Some(ref package) = manifest.package else {
         anyhow::bail!("The Rust project must have at least one package in it.");
@@ -173,6 +182,8 @@ pub fn get_binaries_from_manifest(manifest: &Manifest, target_bin: Option<&str>)
     Ok(binaries)
 }
 
+/// Build a [`FormulaContext`] for one binary from a Cargo manifest, with assets
+/// left empty for a later fetch step to populate.
 pub fn create_base_context(manifest: &Manifest, binary: &BinaryInfo) -> anyhow::Result<FormulaContext> {
     use heck::ToUpperCamelCase;
 
@@ -197,6 +208,9 @@ pub fn create_base_context(manifest: &Manifest, binary: &BinaryInfo) -> anyhow::
     })
 }
 
+/// Build a [`FormulaContext`] from a `formulaic.toml` manifest, expanding the
+/// optional `[bins]` table into install entries. Assets are left empty for a
+/// later fetch step to populate.
 pub fn create_base_context_from_generic(manifest: &GenericManifest) -> FormulaContext {
     use heck::ToUpperCamelCase;
 
@@ -268,21 +282,6 @@ fn extract_asset_info(v: &roctogen::models::ReleaseAsset) -> anyhow::Result<RawA
 }
 
 impl Asset {
-    pub fn from_release_asset(v: &roctogen::models::ReleaseAsset, matcher: &AssetMatcher) -> anyhow::Result<Self> {
-        let info = extract_asset_info(v)?;
-
-        let (os, cpu) = matcher
-            .extract_platform(&info.filename)
-            .with_context(|| format!("Cannot determine platform for asset {}", info.filename))?;
-
-        Ok(Self {
-            cpu: cpu.to_string(),
-            os: os.to_string(),
-            digest: info.digest,
-            url: info.url,
-        })
-    }
-
     /// Create assets from a release asset that may be a universal binary.
     /// Universal binaries produce two assets (arm + intel); others produce one.
     pub fn assets_from_release_asset(
@@ -332,34 +331,28 @@ impl From<&Asset> for upon::Value {
     }
 }
 
+/// Pull a 64-character hex SHA-256 digest out of the contents of a `.sha256`
+/// sidecar file. Handles a bare hash, a `sha256:`-prefixed hash, the
+/// `sha256sum`/`shasum` layout (`<hash>  filename`), and the BSD layout
+/// (`SHA256 (filename) = <hash>`), with or without surrounding whitespace.
+fn parse_sha256(contents: &str) -> Option<String> {
+    contents
+        .split(|c: char| c.is_whitespace() || c == '=' || c == ':')
+        .find(|token| token.len() == 64 && token.bytes().all(|b| b.is_ascii_hexdigit()))
+        .map(|token| token.to_ascii_lowercase())
+}
+
+/// Resolve the SHA-256 digest for an asset, trying in order: a local
+/// `<filename>.sha256` sidecar, a local copy of the tarball, and finally
+/// downloading the asset and hashing it.
 pub fn find_digest(filename: &str, url: &str) -> anyhow::Result<String> {
-    // look for a local shasum file
+    // Prefer a local shasum sidecar file if one is present and parseable.
     let digestpath = format!("{filename}.sha256");
-    if let Ok(exists) = std::fs::exists(&digestpath)
-        && exists
-        && let Ok(mut fp) = std::fs::File::open(&digestpath)
+    if let Ok(true) = std::fs::exists(&digestpath)
+        && let Ok(contents) = std::fs::read_to_string(&digestpath)
+        && let Some(hash) = parse_sha256(&contents)
     {
-        let mut digest = String::new();
-        if let Ok(length) = fp.read_to_string(&mut digest) {
-            // We need to split off any non-digest junk.
-            // the digest itself is exactly 64 char long
-            if length == 64 {
-                return Ok(digest);
-            }
-            if length > 64 {
-                if let Some(slice) = digest.strip_prefix("sha256:") {
-                    return Ok(slice.to_string());
-                }
-                let ending = format!("  {filename}");
-                if let Some(slice) = digest.strip_suffix(ending.as_str()) {
-                    return Ok(slice.to_string());
-                }
-                if let Some(loc) = digest.rfind(" = ") {
-                    let (_, digest) = digest.split_at(loc + 3);
-                    return Ok(digest.trim().to_string());
-                }
-            }
-        }
+        return Ok(hash);
     }
 
     // try a local tarball
@@ -379,19 +372,22 @@ pub fn find_digest(filename: &str, url: &str) -> anyhow::Result<String> {
     Ok(hex::encode(digest))
 }
 
+/// Render a Homebrew formula from `context`.
+///
+/// `custom_template` overrides the built-in template entirely. Otherwise the
+/// built-in template is used, and when `use_gh` is set the gh-cli download
+/// strategy is woven in: the strategy class is prepended and every `url` line
+/// opts into it via `using:`. The gh-cli strategy is never layered onto a
+/// custom template — a custom template owns its own download handling.
 pub fn render_to_string(
     use_gh: bool,
     custom_template: Option<&str>,
     context: &FormulaContext,
 ) -> anyhow::Result<String> {
+    let inject_gh = use_gh && custom_template.is_none();
+
     let mut engine = upon::Engine::new();
-    if let Some(tmpl) = custom_template {
-        engine.add_template("formula", tmpl)?;
-    } else if use_gh {
-        engine.add_template("formula", GH_FORMULA_TMPL)?;
-    } else {
-        engine.add_template("formula", FORMULA_TMPL)?;
-    }
+    engine.add_template("formula", custom_template.unwrap_or(FORMULA_TMPL))?;
 
     // Convert FormulaContext to upon::Value
     let mut map: BTreeMap<&str, upon::Value> = BTreeMap::new();
@@ -404,7 +400,72 @@ pub fn render_to_string(
     map.insert("executables", context.executables.iter().map(|s| s.as_str()).collect());
     map.insert("caveats", context.caveats.as_deref().unwrap_or_default().into());
     map.insert("assets", context.assets.iter().map(upon::Value::from).collect());
+    // Appended to each `url` line; empty unless the gh-cli strategy is active.
+    map.insert(
+        "using_strategy",
+        if inject_gh {
+            ", using: GitHubCliDownloadStrategy"
+        } else {
+            ""
+        }
+        .into(),
+    );
 
     let values = upon::to_value(map)?;
-    Ok(engine.template("formula").render(&values).to_string()?)
+    let body = engine.template("formula").render(&values).to_string()?;
+
+    if inject_gh {
+        Ok(format!("{GH_DOWNLOAD_STRATEGY}\n{body}"))
+    } else {
+        Ok(body)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::parse_sha256;
+
+    const HASH: &str = "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855";
+
+    #[test]
+    fn parses_bare_hash() {
+        assert_eq!(parse_sha256(HASH).as_deref(), Some(HASH));
+    }
+
+    #[test]
+    fn parses_hash_with_trailing_newline() {
+        // The old length-based parser silently failed on this common shape.
+        assert_eq!(parse_sha256(&format!("{HASH}\n")).as_deref(), Some(HASH));
+    }
+
+    #[test]
+    fn parses_shasum_layout() {
+        assert_eq!(
+            parse_sha256(&format!("{HASH}  formulaic.tar.gz\n")).as_deref(),
+            Some(HASH)
+        );
+    }
+
+    #[test]
+    fn parses_sha256_prefix() {
+        assert_eq!(parse_sha256(&format!("sha256:{HASH}")).as_deref(), Some(HASH));
+    }
+
+    #[test]
+    fn parses_bsd_layout() {
+        assert_eq!(
+            parse_sha256(&format!("SHA256 (formulaic.tar.gz) = {HASH}\n")).as_deref(),
+            Some(HASH)
+        );
+    }
+
+    #[test]
+    fn uppercase_is_normalized_to_lowercase() {
+        assert_eq!(parse_sha256(&HASH.to_uppercase()).as_deref(), Some(HASH));
+    }
+
+    #[test]
+    fn rejects_non_digest_content() {
+        assert_eq!(parse_sha256("no digest here\n"), None);
+    }
 }

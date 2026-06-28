@@ -2,7 +2,7 @@
 
 Contributor: C J Silverio
 
-Source Code: https://github.com/ceejbot/nuc2not
+Source Code: https://github.com/ceejbot/formulaic
 
 ## Purpose
 

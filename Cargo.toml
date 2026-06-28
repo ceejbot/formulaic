@@ -3,11 +3,14 @@ name = "formulaic"
 description = "Update a Homebrew tap formula for a project from a manifest or Cargo.toml."
 version = "0.7.0"
 edition = "2024"
+rust-version = "1.88"
 authors = ["C J Silverio <ceejceej@gmail.com>"]
 license = "Parity-7.0.0"
 readme = "README.md"
 repository = "https://github.com/ceejbot/formulaic"
 homepage = "https://github.com/ceejbot/formulaic"
+# Distributed via a Homebrew tap, not crates.io.
+publish = false
 
 [dependencies]
 anyhow = "1.0.98"

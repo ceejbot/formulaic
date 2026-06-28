@@ -122,10 +122,11 @@ fn fetch_github_assets(
                 if asset_name.starts_with(&expected_prefix) {
                     let after_prefix = &asset_name[expected_prefix.len()..];
 
-                    if matcher.matches_target(after_prefix)
-                        && let Ok(mapped) = Asset::assets_from_release_asset(asset, &matcher)
-                    {
-                        context.assets.extend(mapped);
+                    if matcher.matches_target(after_prefix) {
+                        match Asset::assets_from_release_asset(asset, &matcher) {
+                            Ok(mapped) => context.assets.extend(mapped),
+                            Err(e) => eprintln!("Skipping asset {asset_name}: {e:#}"),
+                        }
                     }
                 }
             }
@@ -177,15 +178,18 @@ fn fetch_local_assets(
                         let url =
                             format!("https://github.com/{owner}/{repo}/releases/download/v{version}/{basename_str}");
                         let path_str = fullpath.to_string_lossy();
-                        if let Ok(digest) = find_digest(&path_str, &url) {
-                            for (os, cpu) in platforms {
-                                context.assets.push(Asset {
-                                    cpu: cpu.to_string(),
-                                    os: os.to_string(),
-                                    digest: digest.clone(),
-                                    url: url.clone(),
-                                });
+                        match find_digest(&path_str, &url) {
+                            Ok(digest) => {
+                                for (os, cpu) in platforms {
+                                    context.assets.push(Asset {
+                                        cpu: cpu.to_string(),
+                                        os: os.to_string(),
+                                        digest: digest.clone(),
+                                        url: url.clone(),
+                                    });
+                                }
                             }
+                            Err(e) => eprintln!("Skipping {basename_str}: cannot compute digest: {e:#}"),
                         }
                     }
                 }
@@ -226,12 +230,13 @@ fn render_formula(
                 .with_context(|| format!("Failed to create output directory {}", parent.display()))?;
         }
 
-        let mut fp = std::fs::File::create(&formula_path)
-            .with_context(|| format!("Failed to create formula file {}", formula_path.display()))?;
-        let count = fp.write(rendered.as_bytes())?;
-        if count == 0 {
+        if rendered.is_empty() {
             anyhow::bail!("zero-length formula file indicates trouble in River City.");
         }
+        let mut fp = std::fs::File::create(&formula_path)
+            .with_context(|| format!("Failed to create formula file {}", formula_path.display()))?;
+        fp.write_all(rendered.as_bytes())
+            .with_context(|| format!("Failed to write formula file {}", formula_path.display()))?;
     }
 
     Ok(formula_path.to_string_lossy().to_string())

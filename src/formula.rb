@@ -6,7 +6,7 @@ class {{package}} < Formula
 
 {%- for asset in assets %}
     if OS.{{asset.os}}? && Hardware::CPU.{{asset.cpu}}?
-        url    "{{asset.url}}"
+        url    "{{asset.url}}"{{using_strategy}}
         sha256 "{{asset.sha256}}"
     end
 {%- endfor %}

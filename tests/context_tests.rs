@@ -54,6 +54,64 @@ fn can_render_template() {
 }
 
 #[test]
+fn can_render_gh_strategy() {
+    let context = FormulaContext {
+        package: "Frobber".to_string(),
+        description: "Frobs the whizzbanger".to_string(),
+        version: "1.0.5".to_string(),
+        license: "MIT".to_string(),
+        homepage: "https://example.com".to_string(),
+        executable: "frobber".to_string(),
+        executables: vec!["\"frobber\"".to_string()],
+        caveats: None,
+        assets: vec![Asset {
+            os: "mac".to_string(),
+            cpu: "arm".to_string(),
+            url: "https://example.com/frobber-aarch64-apple-darwin.tar.gz".to_string(),
+            digest: "deadbeef".to_string(),
+        }],
+    };
+    let rendered = render_to_string(true, None, &context).expect("gh strategy rendering failed");
+
+    // The download-strategy class is prepended...
+    assert!(rendered.contains("class GitHubCliDownloadStrategy < CurlDownloadStrategy"));
+    // ...and each url line opts into it.
+    assert!(rendered.contains("using: GitHubCliDownloadStrategy"));
+    // The portable gh lookup replaced the hardcoded /opt/homebrew path.
+    assert!(rendered.contains("which(\"gh\")"));
+    assert!(!rendered.contains("/opt/homebrew/bin/gh"));
+    // The formula body still renders.
+    assert!(rendered.contains("class Frobber < Formula"));
+    assert!(rendered.contains("bin.install \"frobber\""));
+}
+
+#[test]
+fn gh_strategy_is_not_layered_onto_a_custom_template() {
+    let context = FormulaContext {
+        package: "MyTool".to_string(),
+        description: "A test tool".to_string(),
+        version: "2.0.0".to_string(),
+        license: "MIT".to_string(),
+        homepage: "https://example.com".to_string(),
+        executable: "my-tool".to_string(),
+        executables: vec!["\"my-tool\"".to_string()],
+        caveats: None,
+        assets: vec![Asset {
+            os: "mac".to_string(),
+            cpu: "arm".to_string(),
+            url: "https://example.com/asset.tar.gz".to_string(),
+            digest: "abc123".to_string(),
+        }],
+    };
+    let custom = "class {{ package }} < Formula\n    version \"{{ version }}\"\nend\n";
+
+    // Even with use_gh = true, a custom template owns its own download handling.
+    let rendered = render_to_string(true, Some(custom), &context).expect("custom render failed");
+    assert!(!rendered.contains("GitHubCliDownloadStrategy"));
+    assert!(rendered.contains("class MyTool < Formula"));
+}
+
+#[test]
 fn can_render_custom_template() {
     let context = FormulaContext {
         package: "MyTool".to_string(),

@@ -1,6 +1,13 @@
 name: release
-permissions:
-    contents: read
+
+# Definitive release workflow for crates published to ceejbot/homebrew-tap.
+#
+# Builds ARM + Intel binaries for macOS and Linux, tars each binary at the TOP
+# LEVEL (no `target/<triple>/release/` nesting), uploads them to a draft GitHub
+# release, then publishes the release and updates the Homebrew tap.
+#
+# To reuse in another crate: copy this file and change BINARY_NAME below. That is
+# the only crate-specific value.
 
 on:
     push:
@@ -8,162 +15,161 @@ on:
             - "v**[0-9]+.[0-9]+.[0-9]+*"
     workflow_dispatch:
         inputs:
-            refname:
+            ref_name:
                 type: string
                 description: the refname to build a release from
                 default: latest
 
+# Least privilege: only the jobs that touch the release ask for write.
+permissions:
+    contents: read
+
 concurrency:
+    # Never cancel a release mid-upload.
     group: ${{ github.workflow }}-${{ github.ref }}
-    cancel-in-progress: true
+    cancel-in-progress: false
 
 env:
     CARGO_TERM_COLOR: always
-    GH_REPO: ${{ github.repository }}
+    BINARY_NAME: formulaic # <-- the only per-crate change
+
+defaults:
+    run:
+        shell: bash
 
 jobs:
     preflight:
-        permissions:
-            contents: write
         name: preflight
         runs-on: ubuntu-latest
+        permissions:
+            contents: write
+        outputs:
+            ref_name: ${{ steps.ref.outputs.ref_name }}
         steps:
-            - name: create github release
+            - name: resolve ref_name
+              id: ref
+              env:
+                  INPUTS_REF_NAME: ${{ inputs.ref_name }}
+              run: |
+                  if [ -n "$INPUTS_REF_NAME" ]; then
+                      echo "ref_name=$INPUTS_REF_NAME" >> "$GITHUB_OUTPUT"
+                  else
+                      echo "ref_name=$GITHUB_REF_NAME" >> "$GITHUB_OUTPUT"
+                  fi
+
+            - name: create draft release
               env:
                   GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-                  INPUTS_REF_NAME: ${{ inputs.refname }}
+                  GH_REPO: ${{ github.repository }}
+                  REF_NAME: ${{ steps.ref.outputs.ref_name }}
               run: |
-                  REF_NAME="${GITHUB_REF_NAME}"
-                  if [ -n "${INPUTS_REF_NAME}" ]; then
-                      REF_NAME="${INPUTS_REF_NAME}"
+                  # Idempotent: reuse an existing release so re-runs don't error.
+                  if gh release view "$REF_NAME" >/dev/null 2>&1; then
+                      echo "release $REF_NAME already exists; reusing it"
+                  else
+                      gh release create "$REF_NAME" --draft --generate-notes
                   fi
-                  gh release create "${REF_NAME}" --generate-notes
 
-    release-linux:
-        name: release-linux
-        runs-on: ubuntu-latest
+    build:
+        name: build ${{ matrix.target }}
         needs: preflight
         permissions:
             contents: write
+        strategy:
+            fail-fast: false
+            matrix:
+                include:
+                    # macOS: Apple's clang cross-links both darwin arches, so an
+                    # arm64 runner builds the x86_64 slice with just the target.
+                    - runner: macos-latest
+                      target: aarch64-apple-darwin
+                    - runner: macos-latest
+                      target: x86_64-apple-darwin
+                    # Linux: native runners, no cross-linker needed.
+                    - runner: ubuntu-latest
+                      target: x86_64-unknown-linux-gnu
+                    - runner: ubuntu-24.04-arm
+                      target: aarch64-unknown-linux-gnu
+        runs-on: ${{ matrix.runner }}
         steps:
-            - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
+            - name: checkout
+              uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
               with:
-                persist-credentials: false
+                  persist-credentials: false
 
-            - name: get stable Rust
-              uses: actions-rust-lang/setup-rust-toolchain@46268bd060767258de96ed93c1251119784f2ab6 # v1.16.1
+            - name: set up Rust
+              uses: actions-rust-lang/setup-rust-toolchain@166cdcfd11aee3cb47222f9ddb555ce30ddb9659 # v1.17.0
               with:
                   toolchain: stable
-                  cache-directories: |
-                      ~/.cargo/registry
-                      ~/.cargo/bin
-                      target
-                  cache: false
+                  target: ${{ matrix.target }}
 
-            - name: build for release and upload
+            - name: build
+              run: cargo build --release --target ${{ matrix.target }}
+
+            - name: package and upload
               env:
                   GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-                  GITHUB_ACCESS_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-                  INPUTS_REF_NAME: ${{ inputs.refname }}
+                  GH_REPO: ${{ github.repository }}
+                  REF_NAME: ${{ needs.preflight.outputs.ref_name }}
+                  TARGET: ${{ matrix.target }}
               run: |
-                  REF_NAME="${GITHUB_REF_NAME}"
-                  if [ -n "${INPUTS_REF_NAME}" ]; then
-                      REF_NAME="${INPUTS_REF_NAME}"
-                  fi
-                  cargo build --release
-                  TARBALL=formulaic-x86_64-unknown-linux-gnu.tar.gz
-                  tar czf "$TARBALL" --strip-components=2  target/release/formulaic
-                  gh release upload "$REF_NAME" "$TARBALL"
+                  bin_path="target/$TARGET/release/$BINARY_NAME"
+                  test -f "$bin_path" || { echo "missing binary at $bin_path" >&2; exit 1; }
 
-                  digest=$(shasum -a 256 "$TARBALL")
-                  shasum=$(echo "$digest" | { read -r first rest; echo "$first"; } )
-                  echo "$shasum" > "$TARBALL".sha256
-                  gh release upload "$REF_NAME" "$TARBALL".sha256
+                  tarball="$BINARY_NAME-$TARGET.tar.gz"
+                  # `tar -C <dir> <file>` archives the bare binary at the top level.
+                  # We do NOT use --strip-components on create: GNU tar (Linux)
+                  # silently ignores it on -c, leaving target/<triple>/release/
+                  # nesting in the asset and breaking `bin.install`.
+                  tar czf "$tarball" -C "target/$TARGET/release" "$BINARY_NAME"
 
-    release-macos:
-        name: release-macos
-        runs-on: macos-latest
-        needs: preflight
-        permissions:
-            contents: write
+                  shasum -a 256 "$tarball" | awk '{ print $1 }' > "$tarball.sha256"
+                  gh release upload "$REF_NAME" "$tarball" "$tarball.sha256" --clobber
 
-        steps:
-            - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
-              with:
-                persist-credentials: false
-
-            - name: get stable Rust
-              uses: actions-rust-lang/setup-rust-toolchain@46268bd060767258de96ed93c1251119784f2ab6 # v1.16.1
-              with:
-                  toolchain: stable
-                  target: aarch64-apple-darwin, x86_64-apple-darwin
-                  cache-directories: |
-                      ~/.cargo/registry
-                      ~/.cargo/bin
-                      target
-                  cache: false
-
-            - name: build for release
-              run: |
-                  cargo build --release --target aarch64-apple-darwin
-                  cargo build --release --target x86_64-apple-darwin
-
-            - name: upload release assets
-              env:
-                  GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-                  INPUTS_REF_NAME: ${{ inputs.refname }}
-              run: |
-                  REF_NAME="${GITHUB_REF_NAME}"
-                  if [ -n "${INPUTS_REF_NAME}" ]; then
-                      REF_NAME="${INPUTS_REF_NAME}"
-                  fi
-                  mkdir -p dist
-                  cd dist
-                  for target in "aarch64-apple-darwin" "x86_64-apple-darwin"; do
-                      TARBALL="formulaic-$target.tar.gz"
-                      tar czf "$TARBALL" --strip-components=4  ../target/$target/release/formulaic
-                      gh release upload "${REF_NAME}" "$TARBALL"
-
-                      digest=$(shasum -a 256 "$TARBALL")
-                      shasum=$(echo "$digest" | { read -r first rest; echo "$first"; } )
-                      echo "$shasum" > "$TARBALL".sha256
-                      gh release upload "${REF_NAME}" "$TARBALL".sha256
-                  done
-
-    postflight:
-        permissions:
-            contents: write
-        name: postflight
-        runs-on: ubuntu-latest
+    publish:
+        name: publish
         needs:
-            - release-linux
-            - release-macos
+            - preflight
+            - build
+        runs-on: ubuntu-latest
+        permissions:
+            contents: write
         steps:
-            - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
+            - name: checkout
+              uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
               with:
-                persist-credentials: false
+                  persist-credentials: false
 
-            - name: get stable Rust
-              uses: actions-rust-lang/setup-rust-toolchain@46268bd060767258de96ed93c1251119784f2ab6 # v1.16.1
-              with:
-                  toolchain: stable
-                  cache: false
-
-            - name: generate a formula file for all assets
+            - name: publish the release
               env:
-                  GITHUB_ACCESS_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-              run: formula_file=$(cargo run --release --quiet -- ./Cargo.toml)
+                  GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+                  GH_REPO: ${{ github.repository }}
+                  REF_NAME: ${{ needs.preflight.outputs.ref_name }}
+              run: gh release edit "$REF_NAME" --draft=false
 
             - name: update the homebrew tap
               env:
+                  GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
                   GH_TOKEN: ${{ secrets.HOMEBREW_TAP_TOKEN }}
-              shell: bash
+                  HOMEBREW_TAP_TOKEN: ${{ secrets.HOMEBREW_TAP_TOKEN }}
+                  REF_NAME: ${{ needs.preflight.outputs.ref_name }}
               run: |
-                  gh repo clone ceejbot/homebrew-tap
-                  cd homebrew-tap || exit 1
-                  cp ../formulaic.rb Formula/
-                  git add Formula/formulaic.rb
+                  # Fetch formulaic and locate its binary regardless of the
+                  # tarball's internal layout (that layout has changed before and
+                  # silently broke this step).
+                  curl -sSfL -o formulaic.tgz \
+                      https://github.com/ceejbot/formulaic/releases/latest/download/formulaic-x86_64-unknown-linux-gnu.tar.gz
+                  tar xzf formulaic.tgz
+                  formulaic="$(find . -type f -name formulaic | head -1)"
+                  test -n "$formulaic" || { echo "formulaic binary not found in tarball" >&2; exit 1; }
+                  chmod +x "$formulaic"
+
+                  formula_file="$("$formulaic" ./Cargo.toml)"
+                  gh repo clone ceejbot/homebrew-tap tap
+                  cp "$formula_file" tap/Formula/
+                  cd tap
+                  git add "Formula/$(basename "$formula_file")"
                   git config user.name "formula robot"
                   git config user.email "ceejceej@gmail.com"
-                  git commit -m "formulaic ${GITHUB_REF_NAME}"
-                  git push https://x-access-token:${{ secrets.HOMEBREW_TAP_TOKEN }}@github.com/ceejbot/homebrew-tap.git
+                  git commit -m "$BINARY_NAME $REF_NAME"
+                  git push "https://x-access-token:$HOMEBREW_TAP_TOKEN@github.com/ceejbot/homebrew-tap.git"

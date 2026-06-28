@@ -100,43 +100,36 @@ const TARGET_MAPPINGS: &[(&str, &str, &str)] = &[
     ("aarch64-unknown-linux-gnu", "linux", "arm"),
 ];
 
-#[derive(Debug, Default)]
-pub struct AssetMatcher;
+/// Map an asset filename to its Homebrew `(os, cpu)` target, if the filename
+/// contains a known target triple.
+pub fn extract_platform(asset_name: &str) -> Option<(&'static str, &'static str)> {
+    TARGET_MAPPINGS
+        .iter()
+        .find(|(target, _, _)| asset_name.contains(target))
+        .map(|(_, os, cpu)| (*os, *cpu))
+}
 
-impl AssetMatcher {
-    pub fn new() -> Self {
-        Self
+/// Check if an asset name refers to a universal (fat) macOS binary.
+pub fn is_universal(asset_name: &str) -> bool {
+    asset_name.contains("universal-apple-darwin")
+}
+
+/// Every Homebrew target an asset supports. Universal macOS binaries expand to
+/// both arm and intel entries.
+pub fn extract_platforms(asset_name: &str) -> Vec<(&'static str, &'static str)> {
+    if is_universal(asset_name) {
+        return vec![("mac", "arm"), ("mac", "intel")];
     }
+    extract_platform(asset_name).into_iter().collect()
+}
 
-    pub fn extract_platform(&self, asset_name: &str) -> Option<(&'static str, &'static str)> {
-        TARGET_MAPPINGS
+/// Check whether the portion of a filename after the binary-name prefix matches
+/// a known target triple or the universal-binary pattern.
+pub fn matches_target(after_prefix: &str) -> bool {
+    after_prefix.starts_with("universal-apple-darwin")
+        || TARGET_MAPPINGS
             .iter()
-            .find(|(target, _, _)| asset_name.contains(target))
-            .map(|(_, os, cpu)| (*os, *cpu))
-    }
-
-    /// Check if an asset name refers to a universal (fat) macOS binary.
-    pub fn is_universal(&self, asset_name: &str) -> bool {
-        asset_name.contains("universal-apple-darwin")
-    }
-
-    /// Extract all platforms an asset supports. Universal macOS binaries
-    /// expand to both arm and intel entries.
-    pub fn extract_platforms(&self, asset_name: &str) -> Vec<(&'static str, &'static str)> {
-        if self.is_universal(asset_name) {
-            return vec![("mac", "arm"), ("mac", "intel")];
-        }
-        self.extract_platform(asset_name).into_iter().collect()
-    }
-
-    /// Check whether the portion of the filename after the binary name prefix
-    /// matches a known target triple or a universal binary pattern.
-    pub fn matches_target(&self, after_prefix: &str) -> bool {
-        after_prefix.starts_with("universal-apple-darwin")
-            || TARGET_MAPPINGS
-                .iter()
-                .any(|(target, _, _)| after_prefix.starts_with(target))
-    }
+            .any(|(target, _, _)| after_prefix.starts_with(target))
 }
 
 /// Collect the binary targets from a Cargo manifest, optionally narrowing to a
@@ -284,13 +277,10 @@ fn extract_asset_info(v: &roctogen::models::ReleaseAsset) -> anyhow::Result<RawA
 impl Asset {
     /// Create assets from a release asset that may be a universal binary.
     /// Universal binaries produce two assets (arm + intel); others produce one.
-    pub fn assets_from_release_asset(
-        v: &roctogen::models::ReleaseAsset,
-        matcher: &AssetMatcher,
-    ) -> anyhow::Result<Vec<Self>> {
+    pub fn assets_from_release_asset(v: &roctogen::models::ReleaseAsset) -> anyhow::Result<Vec<Self>> {
         let info = extract_asset_info(v)?;
 
-        let platforms = matcher.extract_platforms(&info.filename);
+        let platforms = extract_platforms(&info.filename);
         if platforms.is_empty() {
             anyhow::bail!("Cannot determine platform for asset {}", info.filename);
         }

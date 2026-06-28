@@ -9,8 +9,8 @@ use clap::Parser;
 use clap::builder::Styles;
 use clap::builder::styling::AnsiColor;
 use formulaic::{
-    Asset, AssetMatcher, FormulaContext, GenericManifest, create_base_context, create_base_context_from_generic,
-    find_digest, get_binaries_from_manifest, parse_owner_repo, render_to_string,
+    Asset, FormulaContext, GenericManifest, create_base_context, create_base_context_from_generic, extract_platforms,
+    find_digest, get_binaries_from_manifest, matches_target, parse_owner_repo, render_to_string,
 };
 use roctogen::endpoints::repos;
 use roctokit::adapters::client;
@@ -113,8 +113,6 @@ fn fetch_github_assets(
         .get_latest_release(owner, repo)
         .map_err(|e| anyhow::anyhow!("Unable to get latest release for {}/{}: {:?}", owner, repo, e))?;
 
-    let matcher = AssetMatcher::new();
-
     if let Some(ref assets) = latest_release.assets {
         for asset in assets {
             if let Some(ref asset_name) = asset.name {
@@ -122,8 +120,8 @@ fn fetch_github_assets(
                 if asset_name.starts_with(&expected_prefix) {
                     let after_prefix = &asset_name[expected_prefix.len()..];
 
-                    if matcher.matches_target(after_prefix) {
-                        match Asset::assets_from_release_asset(asset, &matcher) {
+                    if matches_target(after_prefix) {
+                        match Asset::assets_from_release_asset(asset) {
                             Ok(mapped) => context.assets.extend(mapped),
                             Err(e) => eprintln!("Skipping asset {asset_name}: {e:#}"),
                         }
@@ -153,8 +151,6 @@ fn fetch_local_assets(
         anyhow::bail!("No dist/ directory found at {} for local mode", dist_dir.display());
     }
 
-    let matcher = AssetMatcher::new();
-
     for entry in std::fs::read_dir(&dist_dir)
         .with_context(|| format!("Failed to read dist directory: {}", dist_dir.display()))?
     {
@@ -172,8 +168,8 @@ fn fetch_local_assets(
             if basename_str.starts_with(&expected_prefix) {
                 let after_prefix = &basename_str[expected_prefix.len()..];
 
-                if matcher.matches_target(after_prefix) {
-                    let platforms = matcher.extract_platforms(&basename_str);
+                if matches_target(after_prefix) {
+                    let platforms = extract_platforms(&basename_str);
                     if !platforms.is_empty() {
                         let url =
                             format!("https://github.com/{owner}/{repo}/releases/download/v{version}/{basename_str}");

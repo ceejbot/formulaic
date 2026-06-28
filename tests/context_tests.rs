@@ -2,8 +2,9 @@ use std::path::PathBuf;
 
 use cargo_toml::Manifest;
 use formulaic::{
-    Asset, AssetMatcher, BinaryInfo, FormulaContext, GenericManifest, create_base_context,
-    create_base_context_from_generic, get_binaries_from_manifest, parse_owner_repo, render_to_string,
+    Asset, BinaryInfo, FormulaContext, GenericManifest, create_base_context, create_base_context_from_generic,
+    extract_platform, extract_platforms, get_binaries_from_manifest, is_universal, matches_target, parse_owner_repo,
+    render_to_string,
 };
 
 fn load_fixture(name: &str) -> Manifest {
@@ -205,77 +206,69 @@ fn can_create_base_context() {
 
 #[test]
 fn asset_matcher_homebrew_platforms() {
-    let matcher = AssetMatcher::new();
-
     // Test macOS platforms
     assert_eq!(
-        matcher.extract_platform("example-aarch64-apple-darwin.tar.gz"),
+        extract_platform("example-aarch64-apple-darwin.tar.gz"),
         Some(("mac", "arm"))
     );
     assert_eq!(
-        matcher.extract_platform("example-x86_64-apple-darwin.tar.gz"),
+        extract_platform("example-x86_64-apple-darwin.tar.gz"),
         Some(("mac", "intel"))
     );
 
     // Test Linux platforms
     assert_eq!(
-        matcher.extract_platform("example-x86_64-unknown-linux-gnu.tar.gz"),
+        extract_platform("example-x86_64-unknown-linux-gnu.tar.gz"),
         Some(("linux", "intel"))
     );
     assert_eq!(
-        matcher.extract_platform("example-aarch64-unknown-linux-gnu.tar.gz"),
+        extract_platform("example-aarch64-unknown-linux-gnu.tar.gz"),
         Some(("linux", "arm"))
     );
 
     // Test unsupported platforms
-    assert_eq!(matcher.extract_platform("example-x86_64-pc-windows-msvc.zip"), None);
-    assert_eq!(matcher.extract_platform("example-unknown-target.tar.gz"), None);
+    assert_eq!(extract_platform("example-x86_64-pc-windows-msvc.zip"), None);
+    assert_eq!(extract_platform("example-unknown-target.tar.gz"), None);
 }
 
 #[test]
 fn asset_matcher_with_different_naming() {
-    let matcher = AssetMatcher::new();
-
     // Test with different binary names
     assert_eq!(
-        matcher.extract_platform("my-cli-aarch64-apple-darwin.tar.gz"),
+        extract_platform("my-cli-aarch64-apple-darwin.tar.gz"),
         Some(("mac", "arm"))
     );
     assert_eq!(
-        matcher.extract_platform("super_tool_x86_64-unknown-linux-gnu.tar.gz"),
+        extract_platform("super_tool_x86_64-unknown-linux-gnu.tar.gz"),
         Some(("linux", "intel"))
     );
 }
 
 #[test]
 fn asset_matcher_universal_binary() {
-    let matcher = AssetMatcher::new();
-
     // Universal binary should be detected
-    assert!(matcher.is_universal("paletter-universal-apple-darwin.tar.gz"));
-    assert!(!matcher.is_universal("paletter-aarch64-apple-darwin.tar.gz"));
+    assert!(is_universal("paletter-universal-apple-darwin.tar.gz"));
+    assert!(!is_universal("paletter-aarch64-apple-darwin.tar.gz"));
 
     // extract_platforms should return both arm and intel for universal
-    let platforms = matcher.extract_platforms("paletter-universal-apple-darwin.tar.gz");
+    let platforms = extract_platforms("paletter-universal-apple-darwin.tar.gz");
     assert_eq!(platforms.len(), 2);
     assert!(platforms.contains(&("mac", "arm")));
     assert!(platforms.contains(&("mac", "intel")));
 
     // Non-universal should return single platform
-    let platforms = matcher.extract_platforms("paletter-aarch64-apple-darwin.tar.gz");
+    let platforms = extract_platforms("paletter-aarch64-apple-darwin.tar.gz");
     assert_eq!(platforms.len(), 1);
     assert_eq!(platforms[0], ("mac", "arm"));
 }
 
 #[test]
 fn asset_matcher_matches_target() {
-    let matcher = AssetMatcher::new();
-
-    assert!(matcher.matches_target("aarch64-apple-darwin.tar.gz"));
-    assert!(matcher.matches_target("x86_64-unknown-linux-gnu.tar.gz"));
-    assert!(matcher.matches_target("universal-apple-darwin.tar.gz"));
-    assert!(!matcher.matches_target("windows-msvc.zip"));
-    assert!(!matcher.matches_target("something-else.tar.gz"));
+    assert!(matches_target("aarch64-apple-darwin.tar.gz"));
+    assert!(matches_target("x86_64-unknown-linux-gnu.tar.gz"));
+    assert!(matches_target("universal-apple-darwin.tar.gz"));
+    assert!(!matches_target("windows-msvc.zip"));
+    assert!(!matches_target("something-else.tar.gz"));
 }
 
 #[test]

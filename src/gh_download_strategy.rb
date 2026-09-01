@@ -8,11 +8,12 @@ class GitHubCliDownloadStrategy < CurlDownloadStrategy
     super
     # Extract owner and repo from the URL, e.g.
     # https://github.com/ceejbot/formulaic/releases/download/main/formulaic-aarch64-apple-darwin.tar.gz
-    match_data = %r{^https?://github\.com/(?<owner>[^/]+)/(?<repo>[^/]+)/releases/download}.match(@url)
+    match_data = %r{^https?://github\.com/(?<owner>[^/]+)/(?<repo>[^/]+)/releases/download/(?<tag>[^/]+)/}.match(@url)
     return unless match_data
 
     @owner = match_data[:owner]
     @repo = match_data[:repo]
+    @tag = match_data[:tag]
     @filename = File.basename(@url)
   end
 
@@ -30,7 +31,7 @@ class GitHubCliDownloadStrategy < CurlDownloadStrategy
         # Intel macs, and Linuxbrew alike.
         gh = which("gh") || "#{HOMEBREW_PREFIX}/bin/gh"
         system_command(gh, args: [
-          "release", "download",
+          "release", "download", @tag,
           "-R", "#{@owner}/#{@repo}",
           "--pattern", @filename,
           "-D", temporary_path.to_s

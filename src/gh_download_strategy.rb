@@ -2,18 +2,21 @@ require "download_strategy"
 require "utils/formatter"
 require "utils/github"
 require "system_command"
+require "uri"
 
 class GitHubCliDownloadStrategy < CurlDownloadStrategy
   def initialize(url, name, version, **meta)
     super
-    # Extract owner and repo from the URL, e.g.
-    # https://github.com/ceejbot/formulaic/releases/download/main/formulaic-aarch64-apple-darwin.tar.gz
+    # Extract owner, repo, and release tag from the URL, e.g.
+    # https://github.com/ceejbot/formulaic/releases/download/v0.8.0/formulaic-aarch64-apple-darwin.tar.gz
+    # GitHub percent-encodes the tag in asset URLs (a slash becomes %2F), so
+    # decode it before handing it to gh, which wants the literal tag name.
     match_data = %r{^https?://github\.com/(?<owner>[^/]+)/(?<repo>[^/]+)/releases/download/(?<tag>[^/]+)/}.match(@url)
     return unless match_data
 
     @owner = match_data[:owner]
     @repo = match_data[:repo]
-    @tag = match_data[:tag]
+    @tag = URI.decode_uri_component(match_data[:tag])
     @filename = File.basename(@url)
   end
 

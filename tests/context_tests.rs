@@ -82,8 +82,9 @@ fn can_render_gh_strategy() {
     assert!(rendered.contains("which(\"gh\")"));
     assert!(!rendered.contains("/opt/homebrew/bin/gh"));
     // The download is pinned to the release tag parsed from the formula's own
-    // url, not whatever `gh` considers "latest" for the repo.
-    assert!(rendered.contains("@tag = match_data[:tag]"));
+    // url, not whatever `gh` considers "latest" for the repo. The tag is
+    // percent-decoded so tags containing a slash survive the round trip.
+    assert!(rendered.contains("@tag = URI.decode_uri_component(match_data[:tag])"));
     assert!(rendered.contains("\"release\", \"download\", @tag,"));
     // The formula body still renders.
     assert!(rendered.contains("class Frobber < Formula"));

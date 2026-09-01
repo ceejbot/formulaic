@@ -23,7 +23,7 @@ roctokit = { version = "0.15.0", features = ["ureq"] }
 serde = { version = "1", features = ["derive"] }
 sha2 = "0.11"
 toml = "1.0"
-upon = "0.10.0"
+upon = "0.11"
 ureq = "3.0.11"
 
 [lints.rust]

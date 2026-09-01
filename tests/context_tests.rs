@@ -81,6 +81,10 @@ fn can_render_gh_strategy() {
     // The portable gh lookup replaced the hardcoded /opt/homebrew path.
     assert!(rendered.contains("which(\"gh\")"));
     assert!(!rendered.contains("/opt/homebrew/bin/gh"));
+    // The download is pinned to the release tag parsed from the formula's own
+    // url, not whatever `gh` considers "latest" for the repo.
+    assert!(rendered.contains("@tag = match_data[:tag]"));
+    assert!(rendered.contains("\"release\", \"download\", @tag,"));
     // The formula body still renders.
     assert!(rendered.contains("class Frobber < Formula"));
     assert!(rendered.contains("bin.install \"frobber\""));

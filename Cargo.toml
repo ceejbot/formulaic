@@ -1,7 +1,7 @@
 [package]
 name = "formulaic"
 description = "Update a Homebrew tap formula for a project from a manifest or Cargo.toml."
-version = "0.8.0"
+version = "0.8.1"
 edition = "2024"
 rust-version = "1.88"
 authors = ["C J Silverio <ceejceej@gmail.com>"]
